@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloud-chamber-mode-a"
+version = "0.1.0"
+description = "Shared Mode A particle-track detection comparison framework"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26,<3",
+    "opencv-python>=4.10,<5",
+    "PyYAML>=6.0,<7",
+    "streamlit>=1.40,<2",
+]
+
+[tool.setuptools.packages.find]
+include = ["cloud_chamber*"]

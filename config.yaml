@@ -1,0 +1,64 @@
+project:
+  name: Cloud Chamber Particle Track Comparison
+  random_seed: 42
+
+paths:
+  dataset_archive: dataset.zip
+  source_dataset_root: dataset
+  dataset_root: primary_dataset
+  development_images: primary_dataset/development/images
+  validation_images: primary_dataset/validation/images
+  final_test_images: primary_dataset/final_test/images
+  development_labels: primary_dataset/development/labels
+  validation_labels: primary_dataset/validation/labels
+  final_test_labels: primary_dataset/final_test/labels
+  split_manifest: primary_dataset/manifest.csv
+  coco_annotations: primary_dataset/annotations_coco.json
+  raw_images: data/raw/images
+  raw_videos: data/raw/videos
+  extracted_frames: data/frames
+  ground_truth_masks: data/ground_truth/masks
+  annotations: data/ground_truth/annotations
+  results: results
+
+acquisition:
+  frame_interval: 30
+  jpeg_quality: 95
+  excluded_folder_names:
+    - Annotated
+    - BW
+  allowed_image_extensions:
+    - .jpg
+    - .jpeg
+    - .png
+    - .tif
+    - .tiff
+  allowed_video_extensions:
+    - .mp4
+    - .avi
+    - .mov
+
+enhancement:
+  gaussian_kernel: 5
+  gaussian_sigma: 1.0
+  clahe_clip_limit: 2.0
+  clahe_grid_size: 8
+  background_subtraction: optional_reference_frame
+
+baseline:
+  minimum_object_area: 20
+  morphology_kernel: 3
+
+evaluation:
+  mask_threshold: 127
+  iou_match_threshold: 0.5
+
+classification:
+  supported_classes:
+    - unknown
+    - alpha
+    - electron_positron
+    - proton
+  primary_dataset_classes:
+    - alpha
+    - electron_positron
