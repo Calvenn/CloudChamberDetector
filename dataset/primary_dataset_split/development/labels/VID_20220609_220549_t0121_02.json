@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "image_id": "VID_20220609_220549_t0121_02",
+  "split": "development",
+  "session": "VID_20220609_220549",
+  "width": 1080,
+  "height": 1920,
+  "raw_image": "development/images/VID_20220609_220549_t0121_02.jpg",
+  "annotation_reference": "development/annotation_reference/VID_20220609_220549_t0121_02.jpg",
+  "tracks": [
+    {
+      "track_id": 1,
+      "class": "electron_positron",
+      "class_id": 2,
+      "bbox": [
+        426,
+        754,
+        471,
+        938
+      ],
+      "annotation_colour": "red",
+      "source": "supplied_colour_bounding_box"
+    },
+    {
+      "track_id": 2,
+      "class": "electron_positron",
+      "class_id": 2,
+      "bbox": [
+        66,
+        1493,
+        353,
+        193
+      ],
+      "annotation_colour": "red",
+      "source": "supplied_colour_bounding_box"
+    }
+  ],
+  "needs_review": false
+}

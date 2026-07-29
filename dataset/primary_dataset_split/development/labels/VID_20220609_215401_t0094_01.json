@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "image_id": "VID_20220609_215401_t0094_01",
+  "split": "development",
+  "session": "VID_20220609_215401",
+  "width": 1080,
+  "height": 1920,
+  "raw_image": "development/images/VID_20220609_215401_t0094_01.jpg",
+  "annotation_reference": "development/annotation_reference/VID_20220609_215401_t0094_01.jpg",
+  "tracks": [
+    {
+      "track_id": 1,
+      "class": "electron_positron",
+      "class_id": 2,
+      "bbox": [
+        178,
+        1339,
+        285,
+        381
+      ],
+      "annotation_colour": "red",
+      "source": "supplied_colour_bounding_box"
+    }
+  ],
+  "needs_review": false
+}

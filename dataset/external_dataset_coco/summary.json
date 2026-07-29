@@ -1,0 +1,49 @@
+{
+  "source": "C:\\Coding\\CloudChamberDetector\\dataset\\external_dataset",
+  "output": "C:\\Coding\\CloudChamberDetector\\dataset\\external_dataset_coco",
+  "created_at": "2026-07-29T15:32:19.293951+00:00",
+  "source_format": "HxWx5 one-hot semantic NPZ mask",
+  "channel_mapping": {
+    "0": "alpha",
+    "1": "electron_positron",
+    "2": "proton",
+    "3": "v_track",
+    "4": "background"
+  },
+  "conversion": {
+    "connectivity": 8,
+    "threshold": 0.5,
+    "minimum_component_area_pixels": 16,
+    "segmentation_encoding": "COCO uncompressed RLE",
+    "proton_fragment_merging": {
+      "enabled": true,
+      "maximum_endpoint_gap_pixels": 80.0,
+      "maximum_orientation_angle_degrees": 25.0
+    }
+  },
+  "image_count": 483,
+  "annotation_count": 8444,
+  "annotations_by_class": {
+    "alpha": 2091,
+    "electron_positron": 5672,
+    "proton": 370,
+    "v_track": 311
+  },
+  "discarded_small_components_by_class": {
+    "alpha": 1046,
+    "electron_positron": 190,
+    "proton": 10,
+    "v_track": 26
+  },
+  "merged_fragments_by_class": {
+    "alpha": 0,
+    "electron_positron": 0,
+    "proton": 250,
+    "v_track": 0
+  },
+  "one_hot_audit": {
+    "unassigned_pixels": 0,
+    "overlapping_channel_pixels": 0
+  },
+  "limitation": "Connected components approximate instances. Manually review touching tracks and fragmented tracks before final training."
+}

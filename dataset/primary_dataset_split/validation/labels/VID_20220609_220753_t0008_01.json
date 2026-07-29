@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "image_id": "VID_20220609_220753_t0008_01",
+  "split": "validation",
+  "session": "VID_20220609_220753",
+  "width": 1080,
+  "height": 1920,
+  "raw_image": "validation/images/VID_20220609_220753_t0008_01.jpg",
+  "annotation_reference": "validation/annotation_reference/VID_20220609_220753_t0008_01.jpg",
+  "tracks": [
+    {
+      "track_id": 1,
+      "class": "electron_positron",
+      "class_id": 2,
+      "bbox": [
+        535,
+        771,
+        264,
+        227
+      ],
+      "annotation_colour": "red",
+      "source": "supplied_colour_bounding_box"
+    },
+    {
+      "track_id": 2,
+      "class": "electron_positron",
+      "class_id": 2,
+      "bbox": [
+        119,
+        900,
+        320,
+        229
+      ],
+      "annotation_colour": "red",
+      "source": "supplied_colour_bounding_box"
+    },
+    {
+      "track_id": 3,
+      "class": "electron_positron",
+      "class_id": 2,
+      "bbox": [
+        455,
+        1113,
+        527,
+        290
+      ],
+      "annotation_colour": "red",
+      "source": "supplied_colour_bounding_box"
+    }
+  ],
+  "needs_review": false
+}

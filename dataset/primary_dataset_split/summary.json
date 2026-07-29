@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "total_images": 77,
+  "total_boxes": 103,
+  "class_counts": {
+    "alpha": 2,
+    "electron_positron": 101
+  },
+  "split_image_counts": {
+    "development": 34,
+    "final_test": 24,
+    "validation": 19
+  },
+  "split_class_counts": {
+    "development": {
+      "alpha": 2,
+      "electron_positron": 49
+    },
+    "final_test": {
+      "alpha": 0,
+      "electron_positron": 27
+    },
+    "validation": {
+      "alpha": 0,
+      "electron_positron": 25
+    }
+  },
+  "images_needing_review": [],
+  "notes": [
+    "Clean inputs are frames captured from the original MP4 files.",
+    "Supplied S/BW snapshots are excluded as model inputs.",
+    "Red supplied boxes are mapped to electron_positron.",
+    "Yellow supplied boxes are mapped to alpha.",
+    "Bounding boxes are ground truth for object detection, not masks.",
+    "The source ZIP remains unchanged."
+  ]
+}

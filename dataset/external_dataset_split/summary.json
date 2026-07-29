@@ -1,0 +1,61 @@
+{
+  "created_at": "2026-07-29T15:33:12.407112+00:00",
+  "source_annotations": "C:\\Coding\\CloudChamberDetector\\dataset\\external_dataset_coco\\annotations_coco.json",
+  "output": "C:\\Coding\\CloudChamberDetector\\dataset\\external_dataset_split",
+  "strategy": "recording-group split",
+  "image_copying": false,
+  "image_root": "C:\\Coding\\CloudChamberDetector\\dataset\\external_dataset\\images",
+  "total_images": 483,
+  "total_annotations": 8444,
+  "splits": {
+    "development": {
+      "recording_groups": [
+        "2021-03-06_17-54-05",
+        "2021-04-18_09-34-57",
+        "4m2s"
+      ],
+      "image_count": 330,
+      "image_percentage": 68.32,
+      "annotation_count": 5336,
+      "annotations_by_class": {
+        "alpha": 1370,
+        "electron_positron": 3505,
+        "proton": 264,
+        "v_track": 197
+      }
+    },
+    "validation": {
+      "recording_groups": [
+        "2021-04-17"
+      ],
+      "image_count": 108,
+      "image_percentage": 22.36,
+      "annotation_count": 1624,
+      "annotations_by_class": {
+        "alpha": 425,
+        "electron_positron": 1059,
+        "proton": 43,
+        "v_track": 97
+      }
+    },
+    "final_test": {
+      "recording_groups": [
+        "2h24m19s",
+        "43m1s"
+      ],
+      "image_count": 45,
+      "image_percentage": 9.32,
+      "annotation_count": 1484,
+      "annotations_by_class": {
+        "alpha": 296,
+        "electron_positron": 1108,
+        "proton": 63,
+        "v_track": 17
+      }
+    }
+  },
+  "leakage_audit": {
+    "recording_group_overlap": false,
+    "image_id_overlap": false
+  }
+}

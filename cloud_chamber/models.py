@@ -28,10 +28,7 @@ class EnhancementResult:
 
     grey: np.ndarray
     denoised: np.ndarray
-    contrast_enhanced: np.ndarray
-    background_corrected: np.ndarray
     enhanced: np.ndarray
-    background_subtraction_applied: bool = False
 
 
 @dataclass

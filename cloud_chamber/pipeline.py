@@ -37,7 +37,7 @@ def analyse_image(
     features = extract_track_features(
         detection.binary_mask,
         enhancement.enhanced,
-        minimum_area=float(config["baseline"]["minimum_object_area"]),
+        minimum_area=20.0,
     )
 
     return PipelineResult(
@@ -60,11 +60,7 @@ def save_pipeline_images(
     images = {
         "01_grey.png": result.enhancement.grey,
         "02_denoised.png": result.enhancement.denoised,
-        "03_clahe.png": result.enhancement.contrast_enhanced,
-        "04_background_corrected.png": (
-            result.enhancement.background_corrected
-        ),
-        "05_detection_mask.png": result.detection.binary_mask,
+        "03_detection_mask.png": result.detection.binary_mask,
         **{
             f"intermediate_{_safe_name(name)}.png": image
             for name, image in result.detection.intermediate_images.items()

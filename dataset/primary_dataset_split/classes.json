@@ -1,0 +1,10 @@
+{
+  "background": 0,
+  "alpha": 1,
+  "electron_positron": 2,
+  "unknown": 3,
+  "colour_mapping": {
+    "yellow": "alpha",
+    "red": "electron_positron"
+  }
+}
