@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from cloud_chamber.models import DetectionResult
+from cloud_chamber.models import SegmentationResult
 
 
 def validate_detection_result(
-    result: DetectionResult,
+    result: SegmentationResult,
     expected_shape: tuple[int, int],
 ) -> None:
     if not result.method_name.strip():
@@ -37,4 +37,3 @@ def validate_detection_result(
             raise ValueError("Bounding boxes must have a positive area")
         if x + box_width > width or y + box_height > height:
             raise ValueError("Bounding box lies outside the input image")
-

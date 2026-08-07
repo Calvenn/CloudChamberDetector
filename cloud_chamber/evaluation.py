@@ -7,11 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
-from cloud_chamber.models import DetectionResult, EvaluationResult
+from cloud_chamber.models import EvaluationResult, SegmentationResult
 
 
 def evaluate_mask(
-    detection: DetectionResult,
+    detection: SegmentationResult,
     ground_truth_mask: np.ndarray,
 ) -> EvaluationResult:
     if detection.binary_mask.shape != ground_truth_mask.shape:
@@ -69,4 +69,3 @@ def export_evaluations_csv(
 
 def _safe_divide(numerator: float, denominator: float) -> float:
     return float(numerator / denominator) if denominator else 0.0
-

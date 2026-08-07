@@ -25,7 +25,6 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
         "enhancement",
         "segmentation",
         "evaluation",
-        "classification",
     }
     missing = required_sections.difference(config or {})
     if missing:
@@ -36,10 +35,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     if kernel < 1 or kernel % 2 == 0:
         raise ValueError("enhancement.gaussian_kernel must be a positive odd number")
 
-    threshold = float(config["segmentation"]["confidence_threshold"])
-    if not 0.0 <= threshold <= 1.0:
+    morphology_kernel = int(config["segmentation"]["morphology_kernel"])
+    if morphology_kernel < 1 or morphology_kernel % 2 == 0:
         raise ValueError(
-            "segmentation.confidence_threshold must be between 0 and 1"
+            "segmentation.morphology_kernel must be a positive odd number"
         )
 
     return config

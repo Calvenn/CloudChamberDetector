@@ -1,4 +1,4 @@
-"""Streamlit GUI for the amended cloud-chamber ML project."""
+"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
 
 from __future__ import annotations
 
@@ -11,34 +11,23 @@ import streamlit as st
 
 from cloud_chamber.config import load_config
 from cloud_chamber.enhancement import enhance_image
+from cloud_chamber.features import extract_track_features
+from cloud_chamber.segmentation import segment_tracks
 
 
-ALGORITHM_PAGES = {
-    "Convolutional Neural Network (CNN)": (
-        "cloud_chamber/ml/member_models/cnn.py"
-    ),
-    "Neuro-Explicit Model": (
-        "cloud_chamber/ml/member_models/neuro_explicit.py"
-    ),
-    "YOLOv5": "cloud_chamber/ml/member_models/yolov5.py",
-    "Modified U-Net": (
-        "cloud_chamber/ml/member_models/modified_unet.py"
-    ),
-    "Mask R-CNN Model": (
-        "cloud_chamber/ml/member_models/mask_rcnn_model.py"
-    ),
+MODEL_PAGES = {
+    "CNN": "Convolutional Neural Network",
+    "SVM": "Support Vector Machine",
+    "Decision Tree": "Decision Tree",
+    "MLP": "Multilayer Perceptron",
+    "Extra Trees": "Extremely Randomised Trees",
 }
-
-PAGES = [
-    "Acquisition, Enhancement and Segmentation",
-    *ALGORITHM_PAGES,
-    "Final Comparison",
-]
+PAGES = ["Shared Processing Pipeline", *MODEL_PAGES, "Final Model Comparison"]
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="Cloud Chamber ML Comparison",
+        page_title="Cloud Chamber Particle Classification",
         page_icon="☁️",
         layout="wide",
     )
@@ -46,92 +35,110 @@ def main() -> None:
     _initialise_state()
 
     st.sidebar.title("Cloud Chamber")
-    st.sidebar.caption("BMDS2133 machine-learning workflow")
+    st.sidebar.caption("BMDS2133 Mode A comparative study")
     page = st.sidebar.radio("Navigate", PAGES)
     _input_status()
 
-    if page == "Acquisition, Enhancement and Segmentation":
+    if page == "Shared Processing Pipeline":
         _shared_pipeline_page(config)
-    elif page in ALGORITHM_PAGES:
-        _empty_algorithm_page(page, ALGORITHM_PAGES[page])
+    elif page == "Final Model Comparison":
+        _comparison_page()
     else:
-        _final_comparison_page()
+        _model_page(page, MODEL_PAGES[page])
 
 
 def _initialise_state() -> None:
     st.session_state.setdefault("input_image", None)
     st.session_state.setdefault("input_name", None)
     st.session_state.setdefault("source_description", None)
+    st.session_state.setdefault("pipeline_result", None)
 
 
 def _shared_pipeline_page(config: dict) -> None:
-    st.title("Acquisition, Enhancement and Segmentation")
+    st.title("Shared Image Processing Pipeline")
     st.info(
-        "This shared page prepares one consistent input before it is passed "
-        "to the independently developed machine-learning algorithms."
+        "Purpose: acquire an image or video frame, apply grayscale conversion "
+        "and Gaussian filtering, segment tracks using thresholding and "
+        "morphology, then extract one common contour-based feature vector."
     )
 
-    st.header("1. Image / Video Acquisition")
+    st.header("1. Image or video-frame acquisition")
+    _acquisition_section()
+    image = st.session_state.get("input_image")
+    if image is None:
+        return
+
+    st.header("2. Grayscale conversion and Gaussian filtering")
+    enhancement = enhance_image(image, config["enhancement"])
+    columns = st.columns(3)
+    columns[0].image(_bgr_to_rgb(image), caption="Original input")
+    columns[1].image(enhancement.grey, caption="Grayscale")
+    columns[2].image(enhancement.denoised, caption="Gaussian filtered")
+
+    st.header("3. Thresholding, morphology and contour detection")
+    segmentation = segment_tracks(enhancement.enhanced, config["segmentation"])
+    intermediate = segmentation.intermediate_images
+    columns = st.columns(3)
+    columns[0].image(intermediate["threshold"], caption="Otsu threshold")
+    columns[1].image(
+        intermediate["morphological_opening"], caption="Morphological opening"
+    )
+    columns[2].image(
+        segmentation.binary_mask,
+        caption="Closing + filtered contour regions",
+    )
+
+    features = extract_track_features(
+        segmentation.binary_mask,
+        enhancement.enhanced,
+        minimum_area=float(config["segmentation"]["minimum_object_area"]),
+    )
+    st.session_state["pipeline_result"] = {
+        "enhancement": enhancement,
+        "segmentation": segmentation,
+        "features": features,
+    }
+
+    overlay = image.copy()
+    for x, y, width, height in segmentation.bounding_boxes:
+        cv2.rectangle(overlay, (x, y), (x + width, y + height), (0, 255, 255), 2)
+    st.image(_bgr_to_rgb(overlay), caption="Detected particle-track contours")
+
+    st.header("4. Contour-based feature extraction")
+    st.caption(
+        "These identical numerical features are the controlled input for all "
+        "five team-member classifiers."
+    )
+    rows = [_feature_row(item) for item in features]
+    if rows:
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.warning("No contour passed the configured minimum-area filter.")
+
+
+def _acquisition_section() -> None:
     source_type = st.radio("Input type", ["Image", "Video"], horizontal=True)
     if source_type == "Image":
         upload = st.file_uploader(
-            "Upload a cloud-chamber image",
+            "Upload a raw cloud-chamber image",
             type=["jpg", "jpeg", "png", "tif", "tiff"],
         )
         if upload is not None:
             image = _decode_uploaded_image(upload.getvalue())
             _set_input(image, upload.name, "Uploaded image")
-    else:
-        _video_input()
-
-    image = st.session_state.get("input_image")
-    if image is None:
-        st.caption("Select an image or video frame to continue.")
+            st.success("Image loaded.")
         return
 
-    st.divider()
-    st.header("2. Shared Image Enhancement")
-    result = enhance_image(image, config["enhancement"])
-    columns = st.columns(3)
-    columns[0].image(_bgr_to_rgb(image), caption="Original input")
-    columns[1].image(result.grey, caption="Grayscale conversion")
-    columns[2].image(result.denoised, caption="Gaussian filtering")
-    st.caption(
-        "The Gaussian-filtered grayscale image is the shared input for "
-        "segmentation."
-    )
-
-    st.divider()
-    st.header("3. FCN within Mask R-CNN Segmentation")
-    st.image(result.enhanced, caption="Input prepared for segmentation")
-    weights = Path(config["segmentation"]["weights"])
-    if weights.is_file():
-        st.success(f"Segmentation weights found: {weights}")
-        st.caption(
-            "Inference controls will be enabled after the trained model is "
-            "integrated."
-        )
-    else:
-        st.warning(
-            f"Segmentation is not trained yet. Expected weights: `{weights}`"
-        )
-        st.caption(
-            "The current dataset contains bounding boxes but no exact instance "
-            "masks. Mask R-CNN training will be completed after suitable mask "
-            "annotations and the approved external dataset are added."
-        )
-
-
-def _video_input() -> None:
     upload = st.file_uploader(
-        "Upload a cloud-chamber video",
-        type=["mp4", "avi", "mov"],
+        "Upload a cloud-chamber video", type=["mp4", "avi", "mov"]
     )
     if upload is None:
+        st.caption("Select one video frame; that frame is analysed as an image.")
         return
 
-    suffix = Path(upload.name).suffix
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temporary:
+    with tempfile.NamedTemporaryFile(
+        suffix=Path(upload.name).suffix, delete=False
+    ) as temporary:
         temporary.write(upload.getvalue())
         video_path = Path(temporary.name)
 
@@ -142,55 +149,84 @@ def _video_input() -> None:
             return
         frame_count = max(int(capture.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
         fps = float(capture.get(cv2.CAP_PROP_FPS))
-        frame_number = st.slider(
-            "Select frame number",
-            0,
-            frame_count - 1,
-            min(max(int(round(fps)), 1), frame_count - 1),
-        )
+        frame_number = st.slider("Frame number", 0, frame_count - 1, 0)
         capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         success, frame = capture.read()
         capture.release()
         if not success:
             st.error("The selected frame could not be captured.")
             return
-
         timestamp = frame_number / fps if fps > 0 else 0.0
         st.image(
             _bgr_to_rgb(frame),
             caption=f"Frame {frame_number} ({timestamp:.2f} seconds)",
         )
-        if st.button("Use this frame", type="primary"):
-            _set_input(
-                frame,
-                f"{Path(upload.name).stem}_frame_{frame_number:06d}",
-                f"{upload.name}, frame {frame_number}",
-            )
+        if st.button("Use this frame for processing", type="primary"):
+            name = f"{Path(upload.name).stem}_frame_{frame_number:06d}"
+            _set_input(frame, name, f"{upload.name}, frame {frame_number}")
+            st.success("Video frame loaded.")
     finally:
         video_path.unlink(missing_ok=True)
 
 
-def _empty_algorithm_page(title: str, implementation_file: str) -> None:
-    st.title(title)
-    st.caption(f"Member implementation file: `{implementation_file}`")
+def _model_page(short_name: str, full_name: str) -> None:
+    st.title(f"{short_name} Classifier")
     st.info(
-        "This page is intentionally empty. The assigned member will develop "
-        "and connect this algorithm independently."
+        f"Purpose: team-member workspace for the {full_name}. This model must "
+        "use the shared dataset splits and shared processing pipeline."
+    )
+    module_name = short_name.lower().replace(" ", "_")
+    if short_name == "Extra Trees":
+        module_name = "extra_trees"
+    st.code(f"cloud_chamber/ml/member_models/{module_name}.py")
+    st.markdown(
+        """
+        The member implementation should provide training, validation,
+        prediction and model-saving functions. Do not duplicate or alter the
+        shared enhancement, segmentation or feature extraction stages.
+
+        This page is intentionally a placeholder until the assigned member
+        connects their completed classifier.
+        """
     )
 
 
-def _final_comparison_page() -> None:
-    st.title("Final Comparison")
+def _comparison_page() -> None:
+    st.title("Final Model Comparison")
     st.info(
-        "This page will be completed after all five independent algorithms "
-        "produce a common prediction and evaluation result."
+        "Purpose: compare CNN, SVM, Decision Tree, MLP and Extra Trees using "
+        "the same final-test split and the same metrics."
     )
+    st.markdown(
+        "Report per-class precision, recall and F1-score, macro F1-score, "
+        "confusion matrix and processing time. Use validation results for "
+        "model selection; use the final-test split only once after all models "
+        "and parameters are fixed."
+    )
+    st.warning("Comparison becomes available after members connect all models.")
+
+
+def _feature_row(item) -> dict:
+    return {
+        "Track": item.track_id,
+        "Area (px²)": round(item.area_pixels, 3),
+        "Perimeter (px)": round(item.perimeter_pixels, 3),
+        "Length (px)": round(item.major_axis_pixels, 3),
+        "Width (px)": round(item.mean_width_pixels, 3),
+        "Aspect ratio": round(item.aspect_ratio, 3),
+        "Solidity": round(item.solidity, 3),
+        "Rectangularity": round(item.rectangularity, 3),
+        "Thickness (px)": round(item.thickness_pixels, 3),
+        "Orientation (°)": round(item.orientation_degrees, 3),
+        "Mean intensity": round(item.mean_intensity, 3),
+    }
 
 
 def _set_input(image: np.ndarray, name: str, description: str) -> None:
     st.session_state["input_image"] = image
     st.session_state["input_name"] = name
     st.session_state["source_description"] = description
+    st.session_state["pipeline_result"] = None
 
 
 def _input_status() -> None:
@@ -201,7 +237,7 @@ def _input_status() -> None:
 
 
 def _decode_uploaded_image(data: bytes) -> np.ndarray:
-    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("Uploaded data is not a readable image")
     return image

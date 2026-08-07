@@ -1,1 +1,1 @@
-"""Shared machine-learning contracts and segmentation components."""
+"""Machine-learning integration package for the five Mode A classifiers."""

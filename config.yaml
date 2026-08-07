@@ -5,15 +5,15 @@ project:
 paths:
   dataset_archive: dataset.zip
   source_dataset_root: dataset
-  dataset_root: primary_dataset
-  development_images: primary_dataset/development/images
-  validation_images: primary_dataset/validation/images
-  final_test_images: primary_dataset/final_test/images
-  development_labels: primary_dataset/development/labels
-  validation_labels: primary_dataset/validation/labels
-  final_test_labels: primary_dataset/final_test/labels
-  split_manifest: primary_dataset/manifest.csv
-  coco_annotations: primary_dataset/annotations_coco.json
+  dataset_root: dataset/primary_dataset_split
+  development_images: dataset/primary_dataset_split/development/images
+  validation_images: dataset/primary_dataset_split/validation/images
+  final_test_images: dataset/primary_dataset_split/final_test/images
+  development_labels: dataset/primary_dataset_split/development/labels
+  validation_labels: dataset/primary_dataset_split/validation/labels
+  final_test_labels: dataset/primary_dataset_split/final_test/labels
+  split_manifest: dataset/primary_dataset_split/manifest.csv
+  coco_annotations: dataset/primary_dataset_split/annotations_coco.json
   raw_images: data/raw/images
   raw_videos: data/raw/videos
   extracted_frames: data/frames
@@ -43,15 +43,14 @@ enhancement:
   gaussian_sigma: 1.0
 
 segmentation:
-  architecture: mask_rcnn_resnet50_fpn
-  mask_head: fully_convolutional_network
-  class_agnostic: true
-  confidence_threshold: 0.5
-  weights: models/mask_rcnn_track_segmenter.pt
+  threshold_method: otsu
+  minimum_object_area: 20
+  morphology_kernel: 3
+  morphology_iterations: 1
 
 evaluation:
-  box_iou_threshold: 0.5
-  mask_iou_threshold: 0.5
+  mask_threshold: 127
+  iou_match_threshold: 0.5
 
 classification:
   supported_classes:
@@ -59,7 +58,7 @@ classification:
     - alpha
     - electron_positron
     - proton
+    - v_track
   primary_dataset_classes:
     - alpha
     - electron_positron
-  member_model_slots: 5

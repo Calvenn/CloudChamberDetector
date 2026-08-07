@@ -1,23 +1,22 @@
 # Project File Guide
 
-| File or folder | Purpose |
-|---|---|
-| `app.py` | Combined acquisition/enhancement/segmentation page, five empty algorithm pages and final comparison |
-| `config.yaml` | Fixed dataset, enhancement, segmentation and classification settings |
-| `requirements.txt` | Lightweight acquisition/UI dependencies |
-| `requirements-ml.txt` | Optional PyTorch and TorchVision dependencies |
-| `cloud_chamber/acquisition.py` | Image/video acquisition and frame extraction |
-| `cloud_chamber/enhancement.py` | Selected greyscale and Gaussian enhancement |
-| `cloud_chamber/models.py` | General image-processing data contracts |
-| `cloud_chamber/ml/contracts.py` | Segmented instance and member-model prediction contracts |
-| `cloud_chamber/ml/base.py` | `Segmenter` and `ParticleModel` protocols |
-| `cloud_chamber/ml/mask_rcnn.py` | FCN mask head within Mask R-CNN inference adapter |
-| `cloud_chamber/ml/member_models/` | Separate CNN, neuro-explicit, YOLOv5, modified U-Net and Mask R-CNN member files |
-| `primary_dataset/*/images/` | Clean model inputs |
-| `primary_dataset/*/labels/` | Bounding-box ground truth |
-| `primary_dataset/*/annotation_reference/` | Supplied visual annotations for audit only |
-| `primary_dataset/*/review_overlays/` | Extracted boxes drawn on clean frames for review |
-| `primary_dataset/annotations_coco.json` | Combined COCO bounding-box annotations |
+The selected shared flow is acquisition → grayscale → Gaussian filter → Otsu
+threshold → morphological opening/closing → contours → contour features.
 
-The previous classical detector modules are legacy placeholders and are not
-part of the newly selected machine-learning comparison.
+| File | What it does |
+|---|---|
+| `app.py` | Runs the Streamlit interface and displays every shared stage. |
+| `config.yaml` | Stores fixed paths and experiment parameters. |
+| `cloud_chamber/acquisition.py` | Loads images and captures video frames. |
+| `cloud_chamber/enhancement.py` | Performs grayscale conversion and Gaussian filtering. |
+| `cloud_chamber/segmentation.py` | Performs thresholding, morphology and contour detection. |
+| `cloud_chamber/features.py` | Converts contours into the common numerical feature vector. |
+| `cloud_chamber/pipeline.py` | Runs the shared stages together and saves their images. |
+| `cloud_chamber/models.py` | Defines shared result data structures. |
+| `cloud_chamber/evaluation.py` | Calculates mask metrics where ground truth masks exist. |
+| `cloud_chamber/cli.py` | Tests acquisition and processing without the GUI. |
+| `cloud_chamber/ml/member_models/*.py` | Separate team workspaces for the five classifiers. |
+
+Dataset preparation scripts remain separate from runtime code because they
+reconstruct the labelled splits. Prepared images and annotations must not be
+deleted merely because an earlier segmentation model was removed.

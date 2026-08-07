@@ -1,9 +1,4 @@
-"""Shared enhancement stages used before every Mode A detector.
-
-This module implements the selected shared enhancement: greyscale conversion
-followed by Gaussian filtering. Every machine-learning model receives the same
-filtered greyscale image.
-"""
+"""Shared grayscale-conversion and Gaussian-filtering preprocessing."""
 
 from __future__ import annotations
 
@@ -28,9 +23,6 @@ def enhance_image(
 
     kernel = int(settings["gaussian_kernel"])
     sigma = float(settings["gaussian_sigma"])
-    if kernel < 1 or kernel % 2 == 0:
-        raise ValueError("gaussian_kernel must be a positive odd integer")
-
     # Stage 2: Gaussian smoothing reduces sensor noise and small bright dots.
     denoised = cv2.GaussianBlur(
         grey,

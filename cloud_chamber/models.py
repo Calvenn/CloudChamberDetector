@@ -32,12 +32,13 @@ class EnhancementResult:
 
 
 @dataclass
-class DetectionResult:
-    """Mandatory output contract for every individual detector."""
+class SegmentationResult:
+    """Output of the one shared threshold/morphology/contour segmenter."""
 
     method_name: str
     binary_mask: np.ndarray
     bounding_boxes: list[BoundingBox]
+    contours: list[np.ndarray]
     processing_time_ms: float
     intermediate_images: dict[str, np.ndarray] = field(default_factory=dict)
     parameters: dict[str, Any] = field(default_factory=dict)

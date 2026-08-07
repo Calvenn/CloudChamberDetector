@@ -19,6 +19,9 @@ class TrackFeatures:
     mean_width_pixels: float
     orientation_degrees: float
     aspect_ratio: float
+    solidity: float
+    rectangularity: float
+    thickness_pixels: float
     mean_intensity: float
     bounding_box: BoundingBox
 
@@ -46,6 +49,8 @@ def extract_track_features(
         x, y, width, height = cv2.boundingRect(contour)
         major_axis, minor_axis, orientation = _oriented_dimensions(contour)
         mean_width = area / major_axis if major_axis > 0 else 0.0
+        hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
+        rectangle_area = major_axis * minor_axis
 
         region_mask = np.zeros_like(binary_mask)
         cv2.drawContours(region_mask, [contour], -1, 255, thickness=cv2.FILLED)
@@ -60,6 +65,9 @@ def extract_track_features(
                 mean_width_pixels=mean_width,
                 orientation_degrees=orientation,
                 aspect_ratio=major_axis / minor_axis if minor_axis > 0 else 0.0,
+                solidity=area / hull_area if hull_area > 0 else 0.0,
+                rectangularity=area / rectangle_area if rectangle_area > 0 else 0.0,
+                thickness_pixels=mean_width,
                 mean_intensity=mean_intensity,
                 bounding_box=(x, y, width, height),
             )
