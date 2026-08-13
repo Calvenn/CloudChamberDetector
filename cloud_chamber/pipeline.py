@@ -29,11 +29,25 @@ def analyse_image(
 ) -> PipelineResult:
     sample = load_image(image_path)
     enhancement = enhance_image(sample.image, config["enhancement"])
-    segmentation = segment_tracks(enhancement.enhanced, config["segmentation"])
+    segmentation_settings = config["segmentation"]
+    profile = segmentation_settings["roi_profiles"]["external_muller"]
+    effective_settings = {
+        **segmentation_settings,
+        **{
+            key: value
+            for key, value in profile.items()
+            if key not in {"left", "right", "top", "bottom"}
+        },
+    }
+    segmentation = segment_tracks(
+        enhancement.enhanced,
+        effective_settings,
+        {side: profile[side] for side in ("left", "right", "top", "bottom")},
+    )
     features = extract_track_features(
         segmentation.binary_mask,
         enhancement.enhanced,
-        minimum_area=float(config["segmentation"]["minimum_object_area"]),
+        minimum_area=float(effective_settings["minimum_object_area"]),
     )
 
     return PipelineResult(

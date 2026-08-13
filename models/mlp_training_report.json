@@ -1,0 +1,571 @@
+{
+  "method": "StandardScaler + MLPClassifier",
+  "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
+  "feature_columns": [
+    "area_pixels",
+    "perimeter_pixels",
+    "major_axis_pixels",
+    "mean_width_pixels",
+    "orientation_degrees",
+    "aspect_ratio",
+    "solidity",
+    "rectangularity",
+    "thickness_pixels",
+    "mean_intensity"
+  ],
+  "class_counts": {
+    "development": {
+      "alpha": 1366,
+      "electron_positron": 3504,
+      "proton": 264
+    },
+    "validation": {
+      "alpha": 425,
+      "electron_positron": 1058,
+      "proton": 43
+    },
+    "final_test": {
+      "alpha": 296,
+      "electron_positron": 1108,
+      "proton": 63
+    }
+  },
+  "candidate_results": [
+    {
+      "candidate": 1,
+      "parameters": {
+        "hidden_layer_sizes": [
+          32
+        ],
+        "alpha": 0.0001,
+        "learning_rate_init": 0.001,
+        "max_iter": 500,
+        "early_stopping": true,
+        "validation_fraction": 0.1
+      },
+      "balancing": "inverse-frequency sample weights",
+      "validation": {
+        "sample_count": 1526,
+        "accuracy": 0.9560943643512451,
+        "balanced_accuracy": 0.9197228507616173,
+        "macro_f1": 0.8496324348850507,
+        "weighted_f1": 0.9597563584784535,
+        "mean_inference_ms_per_track": 0.00048374836195396386,
+        "class_names": [
+          "alpha",
+          "electron_positron",
+          "proton"
+        ],
+        "confusion_matrix": [
+          [
+            394,
+            14,
+            17
+          ],
+          [
+            8,
+            1028,
+            22
+          ],
+          [
+            3,
+            3,
+            37
+          ]
+        ],
+        "classification_report": {
+          "alpha": {
+            "precision": 0.9728395061728395,
+            "recall": 0.9270588235294117,
+            "f1-score": 0.9493975903614458,
+            "support": 425.0
+          },
+          "electron_positron": {
+            "precision": 0.9837320574162679,
+            "recall": 0.9716446124763705,
+            "f1-score": 0.9776509747979077,
+            "support": 1058.0
+          },
+          "proton": {
+            "precision": 0.4868421052631579,
+            "recall": 0.8604651162790697,
+            "f1-score": 0.6218487394957983,
+            "support": 43.0
+          },
+          "accuracy": 0.9560943643512451,
+          "macro avg": {
+            "precision": 0.814471222950755,
+            "recall": 0.9197228507616173,
+            "f1-score": 0.8496324348850507,
+            "support": 1526.0
+          },
+          "weighted avg": {
+            "precision": 0.9666969314522832,
+            "recall": 0.9560943643512451,
+            "f1-score": 0.9597563584784535,
+            "support": 1526.0
+          }
+        }
+      }
+    },
+    {
+      "candidate": 2,
+      "parameters": {
+        "hidden_layer_sizes": [
+          32
+        ],
+        "alpha": 0.001,
+        "learning_rate_init": 0.001,
+        "max_iter": 500,
+        "early_stopping": true,
+        "validation_fraction": 0.1
+      },
+      "balancing": "inverse-frequency sample weights",
+      "validation": {
+        "sample_count": 1526,
+        "accuracy": 0.9560943643512451,
+        "balanced_accuracy": 0.9197228507616173,
+        "macro_f1": 0.8496324348850507,
+        "weighted_f1": 0.9597563584784535,
+        "mean_inference_ms_per_track": 0.000473132371467396,
+        "class_names": [
+          "alpha",
+          "electron_positron",
+          "proton"
+        ],
+        "confusion_matrix": [
+          [
+            394,
+            14,
+            17
+          ],
+          [
+            8,
+            1028,
+            22
+          ],
+          [
+            3,
+            3,
+            37
+          ]
+        ],
+        "classification_report": {
+          "alpha": {
+            "precision": 0.9728395061728395,
+            "recall": 0.9270588235294117,
+            "f1-score": 0.9493975903614458,
+            "support": 425.0
+          },
+          "electron_positron": {
+            "precision": 0.9837320574162679,
+            "recall": 0.9716446124763705,
+            "f1-score": 0.9776509747979077,
+            "support": 1058.0
+          },
+          "proton": {
+            "precision": 0.4868421052631579,
+            "recall": 0.8604651162790697,
+            "f1-score": 0.6218487394957983,
+            "support": 43.0
+          },
+          "accuracy": 0.9560943643512451,
+          "macro avg": {
+            "precision": 0.814471222950755,
+            "recall": 0.9197228507616173,
+            "f1-score": 0.8496324348850507,
+            "support": 1526.0
+          },
+          "weighted avg": {
+            "precision": 0.9666969314522832,
+            "recall": 0.9560943643512451,
+            "f1-score": 0.9597563584784535,
+            "support": 1526.0
+          }
+        }
+      }
+    },
+    {
+      "candidate": 3,
+      "parameters": {
+        "hidden_layer_sizes": [
+          64
+        ],
+        "alpha": 0.0001,
+        "learning_rate_init": 0.001,
+        "max_iter": 500,
+        "early_stopping": true,
+        "validation_fraction": 0.1
+      },
+      "balancing": "inverse-frequency sample weights",
+      "validation": {
+        "sample_count": 1526,
+        "accuracy": 0.9613368283093053,
+        "balanced_accuracy": 0.9282724461833795,
+        "macro_f1": 0.8688824124259796,
+        "weighted_f1": 0.9636478045297304,
+        "mean_inference_ms_per_track": 0.0007256880742294053,
+        "class_names": [
+          "alpha",
+          "electron_positron",
+          "proton"
+        ],
+        "confusion_matrix": [
+          [
+            391,
+            15,
+            19
+          ],
+          [
+            8,
+            1038,
+            12
+          ],
+          [
+            3,
+            2,
+            38
+          ]
+        ],
+        "classification_report": {
+          "alpha": {
+            "precision": 0.972636815920398,
+            "recall": 0.92,
+            "f1-score": 0.9455864570737605,
+            "support": 425.0
+          },
+          "electron_positron": {
+            "precision": 0.9838862559241706,
+            "recall": 0.9810964083175804,
+            "f1-score": 0.9824893516327496,
+            "support": 1058.0
+          },
+          "proton": {
+            "precision": 0.5507246376811594,
+            "recall": 0.8837209302325582,
+            "f1-score": 0.6785714285714286,
+            "support": 43.0
+          },
+          "accuracy": 0.9613368283093053,
+          "macro avg": {
+            "precision": 0.835749236508576,
+            "recall": 0.9282724461833795,
+            "f1-score": 0.8688824124259796,
+            "support": 1526.0
+          },
+          "weighted avg": {
+            "precision": 0.9685474868638475,
+            "recall": 0.9613368283093053,
+            "f1-score": 0.9636478045297304,
+            "support": 1526.0
+          }
+        }
+      }
+    },
+    {
+      "candidate": 4,
+      "parameters": {
+        "hidden_layer_sizes": [
+          64
+        ],
+        "alpha": 0.001,
+        "learning_rate_init": 0.001,
+        "max_iter": 500,
+        "early_stopping": true,
+        "validation_fraction": 0.1
+      },
+      "balancing": "inverse-frequency sample weights",
+      "validation": {
+        "sample_count": 1526,
+        "accuracy": 0.9613368283093053,
+        "balanced_accuracy": 0.9282724461833795,
+        "macro_f1": 0.8688824124259796,
+        "weighted_f1": 0.9636478045297304,
+        "mean_inference_ms_per_track": 0.0010353866317848032,
+        "class_names": [
+          "alpha",
+          "electron_positron",
+          "proton"
+        ],
+        "confusion_matrix": [
+          [
+            391,
+            15,
+            19
+          ],
+          [
+            8,
+            1038,
+            12
+          ],
+          [
+            3,
+            2,
+            38
+          ]
+        ],
+        "classification_report": {
+          "alpha": {
+            "precision": 0.972636815920398,
+            "recall": 0.92,
+            "f1-score": 0.9455864570737605,
+            "support": 425.0
+          },
+          "electron_positron": {
+            "precision": 0.9838862559241706,
+            "recall": 0.9810964083175804,
+            "f1-score": 0.9824893516327496,
+            "support": 1058.0
+          },
+          "proton": {
+            "precision": 0.5507246376811594,
+            "recall": 0.8837209302325582,
+            "f1-score": 0.6785714285714286,
+            "support": 43.0
+          },
+          "accuracy": 0.9613368283093053,
+          "macro avg": {
+            "precision": 0.835749236508576,
+            "recall": 0.9282724461833795,
+            "f1-score": 0.8688824124259796,
+            "support": 1526.0
+          },
+          "weighted avg": {
+            "precision": 0.9685474868638475,
+            "recall": 0.9613368283093053,
+            "f1-score": 0.9636478045297304,
+            "support": 1526.0
+          }
+        }
+      }
+    },
+    {
+      "candidate": 5,
+      "parameters": {
+        "hidden_layer_sizes": [
+          64,
+          32
+        ],
+        "alpha": 0.0001,
+        "learning_rate_init": 0.001,
+        "max_iter": 500,
+        "early_stopping": true,
+        "validation_fraction": 0.1
+      },
+      "balancing": "inverse-frequency sample weights",
+      "validation": {
+        "sample_count": 1526,
+        "accuracy": 0.9619921363040629,
+        "balanced_accuracy": 0.8821604055522944,
+        "macro_f1": 0.8839696470707327,
+        "weighted_f1": 0.9619562077054966,
+        "mean_inference_ms_per_track": 0.0008998034075424344,
+        "class_names": [
+          "alpha",
+          "electron_positron",
+          "proton"
+        ],
+        "confusion_matrix": [
+          [
+            403,
+            17,
+            5
+          ],
+          [
+            18,
+            1034,
+            6
+          ],
+          [
+            8,
+            4,
+            31
+          ]
+        ],
+        "classification_report": {
+          "alpha": {
+            "precision": 0.9393939393939394,
+            "recall": 0.9482352941176471,
+            "f1-score": 0.9437939110070258,
+            "support": 425.0
+          },
+          "electron_positron": {
+            "precision": 0.9800947867298578,
+            "recall": 0.9773156899810964,
+            "f1-score": 0.9787032654992901,
+            "support": 1058.0
+          },
+          "proton": {
+            "precision": 0.7380952380952381,
+            "recall": 0.7209302325581395,
+            "f1-score": 0.7294117647058823,
+            "support": 43.0
+          },
+          "accuracy": 0.9619921363040629,
+          "macro avg": {
+            "precision": 0.8858613214063452,
+            "recall": 0.8821604055522944,
+            "f1-score": 0.8839696470707327,
+            "support": 1526.0
+          },
+          "weighted avg": {
+            "precision": 0.9619402384277254,
+            "recall": 0.9619921363040629,
+            "f1-score": 0.9619562077054966,
+            "support": 1526.0
+          }
+        }
+      }
+    },
+    {
+      "candidate": 6,
+      "parameters": {
+        "hidden_layer_sizes": [
+          64,
+          32
+        ],
+        "alpha": 0.001,
+        "learning_rate_init": 0.001,
+        "max_iter": 500,
+        "early_stopping": true,
+        "validation_fraction": 0.1
+      },
+      "balancing": "inverse-frequency sample weights",
+      "validation": {
+        "sample_count": 1526,
+        "accuracy": 0.9619921363040629,
+        "balanced_accuracy": 0.8821604055522944,
+        "macro_f1": 0.8839696470707327,
+        "weighted_f1": 0.9619562077054966,
+        "mean_inference_ms_per_track": 0.0008084534736167698,
+        "class_names": [
+          "alpha",
+          "electron_positron",
+          "proton"
+        ],
+        "confusion_matrix": [
+          [
+            403,
+            17,
+            5
+          ],
+          [
+            18,
+            1034,
+            6
+          ],
+          [
+            8,
+            4,
+            31
+          ]
+        ],
+        "classification_report": {
+          "alpha": {
+            "precision": 0.9393939393939394,
+            "recall": 0.9482352941176471,
+            "f1-score": 0.9437939110070258,
+            "support": 425.0
+          },
+          "electron_positron": {
+            "precision": 0.9800947867298578,
+            "recall": 0.9773156899810964,
+            "f1-score": 0.9787032654992901,
+            "support": 1058.0
+          },
+          "proton": {
+            "precision": 0.7380952380952381,
+            "recall": 0.7209302325581395,
+            "f1-score": 0.7294117647058823,
+            "support": 43.0
+          },
+          "accuracy": 0.9619921363040629,
+          "macro avg": {
+            "precision": 0.8858613214063452,
+            "recall": 0.8821604055522944,
+            "f1-score": 0.8839696470707327,
+            "support": 1526.0
+          },
+          "weighted avg": {
+            "precision": 0.9619402384277254,
+            "recall": 0.9619921363040629,
+            "f1-score": 0.9619562077054966,
+            "support": 1526.0
+          }
+        }
+      }
+    }
+  ],
+  "selected_candidate": 5,
+  "selected_parameters": {
+    "hidden_layer_sizes": [
+      64,
+      32
+    ],
+    "alpha": 0.0001
+  },
+  "final_test": {
+    "sample_count": 1467,
+    "accuracy": 0.9420586230402181,
+    "balanced_accuracy": 0.8814197126471495,
+    "macro_f1": 0.8933276875598434,
+    "weighted_f1": 0.9428153526501757,
+    "mean_inference_ms_per_track": 0.000842126788774311,
+    "class_names": [
+      "alpha",
+      "electron_positron",
+      "proton"
+    ],
+    "confusion_matrix": [
+      [
+        274,
+        20,
+        2
+      ],
+      [
+        47,
+        1060,
+        1
+      ],
+      [
+        13,
+        2,
+        48
+      ]
+    ],
+    "classification_report": {
+      "alpha": {
+        "precision": 0.8203592814371258,
+        "recall": 0.9256756756756757,
+        "f1-score": 0.8698412698412699,
+        "support": 296.0
+      },
+      "electron_positron": {
+        "precision": 0.9796672828096118,
+        "recall": 0.9566787003610109,
+        "f1-score": 0.9680365296803652,
+        "support": 1108.0
+      },
+      "proton": {
+        "precision": 0.9411764705882353,
+        "recall": 0.7619047619047619,
+        "f1-score": 0.8421052631578947,
+        "support": 63.0
+      },
+      "accuracy": 0.9420586230402181,
+      "macro avg": {
+        "precision": 0.913734344944991,
+        "recall": 0.8814197126471495,
+        "f1-score": 0.8933276875598434,
+        "support": 1467.0
+      },
+      "weighted avg": {
+        "precision": 0.945870357399794,
+        "recall": 0.9420586230402181,
+        "f1-score": 0.9428153526501757,
+        "support": 1467.0
+      }
+    }
+  },
+  "model_path": "C:\\Coding\\CloudChamberDetector\\models\\mlp_classifier.joblib"
+}

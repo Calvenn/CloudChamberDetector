@@ -39,14 +39,66 @@ acquisition:
     - .mov
 
 enhancement:
-  gaussian_kernel: 5
-  gaussian_sigma: 1.0
+  # Stronger smoothing suppresses fine granular chamber texture while a 7x7
+  # kernel remains small relative to genuine long particle tracks.
+  gaussian_kernel: 7
+  gaussian_sigma: 1.4
 
 segmentation:
-  threshold_method: otsu
-  minimum_object_area: 20
-  morphology_kernel: 3
-  morphology_iterations: 1
+  threshold_method: white_tophat_otsu
+  # White top-hat is a morphological operation that suppresses slowly varying
+  # background and preserves locally bright, thin structures.
+  top_hat_kernel: 41
+  # Selected with the kernel using pixel F1 on the validation masks only.
+  threshold_offset: 4
+  # Conservative lower-tail cut-offs measured from labelled Müller tracks.
+  # Final contour filtering removes small/compact regions after closing.
+  minimum_object_area: 80
+  minimum_major_axis: 25
+  minimum_thin_area: 90
+  minimum_thin_perimeter: 40
+  minimum_thin_major_axis: 17
+  minimum_thin_aspect_ratio: 2.0
+  # Closing is deliberately larger and runs first to join short breaks.
+  closing_kernel: 15
+  closing_iterations: 1
+  # Opening is disabled so it cannot erase tracks only 1-2 pixels wide.
+  # Small dots are removed by the contour size/shape rules above instead.
+  apply_opening: false
+  opening_kernel: 3
+  opening_iterations: 1
+  maximum_thin_frame_span: 0.85
+  maximum_thin_frame_thickness: 0.025
+  roi_profiles:
+    external_muller:
+      left: 0.0
+      right: 0.0
+      top: 0.0
+      bottom: 0.0
+      threshold_offset: 4
+      closing_kernel: 15
+      minimum_object_area: 80
+      minimum_major_axis: 25
+      enable_thin_track_rule: true
+    primary_full_chamber:
+      # Excludes the bright chamber walls in the fixed primary-camera layout.
+      left: 0.06
+      right: 0.06
+      top: 0.07
+      bottom: 0.12
+      # Selected by one-to-one box F1 on the primary validation split.
+      threshold_offset: 40
+      closing_kernel: 3
+      minimum_object_area: 200
+      minimum_major_axis: 40
+      # A second, stricter shape rule retains small but clearly elongated
+      # fragments. Validation recovered 2 additional labelled tracks (11 -> 13)
+      # with this rule; compact dots still fail the aspect/length requirements.
+      enable_thin_track_rule: true
+      minimum_thin_area: 150
+      minimum_thin_perimeter: 70
+      minimum_thin_major_axis: 30
+      minimum_thin_aspect_ratio: 3.0
 
 evaluation:
   mask_threshold: 127
@@ -54,11 +106,9 @@ evaluation:
 
 classification:
   supported_classes:
-    - unknown
     - alpha
     - electron_positron
     - proton
-    - v_track
   primary_dataset_classes:
     - alpha
     - electron_positron

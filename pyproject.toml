@@ -12,6 +12,8 @@ dependencies = [
     "opencv-python>=4.10,<5",
     "PyYAML>=6.0,<7",
     "streamlit>=1.40,<2",
+    "scikit-learn>=1.7,<2",
+    "joblib>=1.4,<2",
 ]
 
 [tool.setuptools.packages.find]

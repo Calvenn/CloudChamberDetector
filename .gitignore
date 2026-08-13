@@ -10,3 +10,5 @@ data/frames/*
 tmp/*
 .agents/
 models/*.pt
+models/*.joblib
+data/features/
