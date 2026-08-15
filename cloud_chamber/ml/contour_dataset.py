@@ -13,6 +13,7 @@ import numpy as np
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
+from cloud_chamber.segmentation import segment_tracks
 
 
 def decode_uncompressed_rle(segmentation: dict) -> np.ndarray:
@@ -84,6 +85,125 @@ def build_feature_csv(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = ["image_id", "annotation_id", "label", *FEATURE_COLUMNS]
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return dict(sorted(counts.items()))
+
+
+def build_segmented_feature_csv(
+    annotation_path: str | Path,
+    output_path: str | Path,
+    config: dict,
+    allowed_labels: set[str] | None = None,
+    minimum_label_overlap: float = 0.5,
+) -> dict[str, int]:
+    """Build labelled features from automatic contours, not perfect masks.
+
+    Each automatically segmented contour receives the class of the COCO mask
+    containing at least ``minimum_label_overlap`` of its pixels. Unmatched
+    detections are excluded because the classifier has no background class;
+    rejecting those regions remains the segmenter's responsibility.
+    """
+    annotation_path = Path(annotation_path).resolve()
+    data = json.loads(annotation_path.read_text(encoding="utf-8"))
+    images = {int(item["id"]): item for item in data["images"]}
+    categories = {int(item["id"]): item["name"] for item in data["categories"]}
+    grouped = defaultdict(list)
+    for annotation in data["annotations"]:
+        label = categories[int(annotation["category_id"])]
+        if allowed_labels is None or label in allowed_labels:
+            grouped[int(annotation["image_id"])].append(annotation)
+
+    profile = config["segmentation"]["roi_profiles"]["external_muller"]
+    margins = {side: profile[side] for side in ("left", "right", "top", "bottom")}
+    segmentation_settings = {
+        **config["segmentation"],
+        **{name: value for name, value in profile.items() if name not in margins},
+    }
+    feature_minimum_area = float(segmentation_settings["minimum_object_area"])
+    if segmentation_settings.get("enable_thin_track_rule", True):
+        feature_minimum_area = min(
+            feature_minimum_area,
+            float(segmentation_settings["minimum_thin_area"]),
+        )
+
+    rows: list[dict] = []
+    counts: dict[str, int] = defaultdict(int)
+    for image_id, annotations in grouped.items():
+        image_record = images[image_id]
+        image_path = (annotation_path.parent / image_record["file_name"]).resolve()
+        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise FileNotFoundError(f"Cannot read linked image: {image_path}")
+        enhanced = enhance_image(image, config["enhancement"])
+        segmented = segment_tracks(
+            enhanced.enhanced, segmentation_settings, margins
+        )
+        measured = extract_track_features(
+            segmented.binary_mask,
+            enhanced.enhanced,
+            minimum_area=feature_minimum_area,
+        )
+        contour_by_box = {
+            tuple(int(value) for value in cv2.boundingRect(contour)): contour
+            for contour in segmented.contours
+        }
+        labelled_masks = [
+            (
+                annotation,
+                decode_uncompressed_rle(annotation["segmentation"]) > 0,
+            )
+            for annotation in annotations
+        ]
+
+        for track in measured:
+            contour = contour_by_box.get(track.bounding_box)
+            if contour is None:
+                continue
+            predicted_mask = np.zeros_like(segmented.binary_mask)
+            cv2.drawContours(predicted_mask, [contour], -1, 255, cv2.FILLED)
+            predicted_pixels = predicted_mask > 0
+            predicted_count = int(np.count_nonzero(predicted_pixels))
+            if predicted_count == 0:
+                continue
+            best_annotation = None
+            best_overlap = 0.0
+            for annotation, truth_mask in labelled_masks:
+                overlap = float(
+                    np.count_nonzero(predicted_pixels & truth_mask)
+                    / predicted_count
+                )
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_annotation = annotation
+            if best_annotation is None or best_overlap < minimum_label_overlap:
+                continue
+            label = categories[int(best_annotation["category_id"])]
+            rows.append(
+                {
+                    "image_id": image_id,
+                    "annotation_id": int(best_annotation["id"]),
+                    "label_overlap": best_overlap,
+                    "label": label,
+                    **{
+                        column: getattr(track, column)
+                        for column in FEATURE_COLUMNS
+                    },
+                }
+            )
+            counts[label] += 1
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "image_id",
+        "annotation_id",
+        "label_overlap",
+        "label",
+        *FEATURE_COLUMNS,
+    ]
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
