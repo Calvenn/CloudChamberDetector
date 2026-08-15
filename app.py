@@ -84,11 +84,6 @@ def _initialise_state() -> None:
     st.session_state.setdefault(
         "layout_choice", "Auto-detect from image shape (recommended)"
     )
-    if st.session_state["layout_choice"] not in ROI_PROFILE_LABELS:
-        # Replace an obsolete selection retained by an older Streamlit session.
-        st.session_state["layout_choice"] = (
-            "Auto-detect from image shape (recommended)"
-        )
     st.session_state.setdefault("mlp_quality", None)
     st.session_state.setdefault("batch_reports", {})
     st.session_state.setdefault("mlp_batch_results", {})
