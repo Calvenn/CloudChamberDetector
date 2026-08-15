@@ -22,11 +22,19 @@ from cloud_chamber.ml.member_models.extra_trees import (
     summarise_predictions as summarise_extra_trees_predictions,
 )
 from cloud_chamber.ml.member_models.mlp import (
+    DISPLAY_NAMES,
     build_visual_report,
     encode_report_csv,
     encode_report_png,
     load_model,
     predict_tracks,
+)
+from cloud_chamber.reporting import (
+    assess_all_contours,
+    build_summary,
+    encode_pdf_report,
+    make_traceability_metadata,
+    reporting_status,
 )
 from cloud_chamber.segmentation import segment_tracks
 
@@ -37,11 +45,6 @@ MODEL_PAGES = {
     "Decision Tree": "Decision Tree",
     "MLP": "Multilayer Perceptron",
     "Extra Trees": "Extremely Randomised Trees",
-}
-ROI_PROFILE_LABELS = {
-    "Auto-detect from image shape (recommended)": "auto",
-    "External Muller / already cropped": "external_muller",
-    "Primary dataset / full chamber": "primary_full_chamber",
 }
 PAGES = ["Shared Processing Pipeline", *MODEL_PAGES, "Final Model Comparison"]
 
@@ -67,10 +70,11 @@ def main() -> None:
     elif page == "Final Model Comparison":
         _comparison_page()
     else:
-        _model_page(page, MODEL_PAGES[page])
+        _model_page(page, MODEL_PAGES[page], config)
 
 
 def _initialise_state() -> None:
+    st.session_state.setdefault("input_batch", [])
     st.session_state.setdefault("input_image", None)
     st.session_state.setdefault("input_name", None)
     st.session_state.setdefault("source_description", None)
@@ -85,180 +89,55 @@ def _initialise_state() -> None:
         st.session_state["layout_choice"] = (
             "Auto-detect from image shape (recommended)"
         )
+    st.session_state.setdefault("mlp_quality", None)
+    st.session_state.setdefault("batch_reports", {})
+    st.session_state.setdefault("mlp_batch_results", {})
 
 
 def _shared_pipeline_page(config: dict) -> None:
     st.title("Shared Image Processing Pipeline")
-    st.info(
-        "Purpose: acquire an image or video frame, apply grayscale conversion "
-        "and Gaussian filtering, segment tracks using thresholding and "
-        "morphology, then extract one common contour-based feature vector."
-    )
 
-    st.header("1. Image or video-frame acquisition")
-    _acquisition_section()
+    st.header("Image or video-frame acquisition")
+    _acquisition_section(config)
     image = st.session_state.get("input_image")
     if image is None:
         return
 
-    st.subheader("Analysis region")
-    profile_label = st.selectbox(
-        "Dataset/image layout",
-        list(ROI_PROFILE_LABELS),
-        key="layout_choice",
-        help=(
-            "MÃ¼ller images are already cropped. Primary images contain bright "
-            "chamber walls, so analysis is restricted to the inner chamber."
-        ),
-    )
-    profile_name = ROI_PROFILE_LABELS[profile_label]
-    detected_profile = _detect_layout_profile(image)
-    if profile_name == "auto":
-        profile_name = detected_profile
-        detected_label = (
-            "Primary dataset / full chamber"
-            if profile_name == "primary_full_chamber"
-            else "External Muller / already cropped"
-        )
-        st.info(f"Automatically detected layout: **{detected_label}**")
-    elif profile_name != detected_profile:
-        expected = (
-            "Primary dataset / full chamber"
-            if detected_profile == "primary_full_chamber"
-            else "External Muller / already cropped"
-        )
-        st.error(
-            f"The selected profile conflicts with the image shape. Use "
-            f"**{expected}**, or select automatic detection. Processing has "
-            "been stopped to prevent an invalid segmentation result."
-        )
-        return
-    selected_profile = config["segmentation"]["roi_profiles"][profile_name]
-    roi_margins = {
-        side: selected_profile[side]
-        for side in ("left", "right", "top", "bottom")
-    }
-    # The image sources have different noise and framing. Keep the same
-    # algorithm but apply the validation-selected parameters for that source.
-    segmentation_settings = {
-        **config["segmentation"],
-        **{
-            name: value
-            for name, value in selected_profile.items()
-            if name not in roi_margins
-        },
-    }
-    st.success(
-        f"Active profile: {profile_name} | "
-        f"threshold offset={segmentation_settings['threshold_offset']}, "
-        f"closing={segmentation_settings['closing_kernel']}x"
-        f"{segmentation_settings['closing_kernel']}, "
-        f"minimum area={segmentation_settings['minimum_object_area']} px^2, "
-        f"minimum length={segmentation_settings['minimum_major_axis']} px."
-    )
-
-    st.header("2. Grayscale conversion and Gaussian filtering")
-    enhancement = enhance_image(image, config["enhancement"])
+    result = _process_pipeline_image(image, config)
+    enhancement = result["enhancement"]
+    segmentation = result["segmentation"]
+    features = result["features"]
+    st.header("Grayscale conversion and Gaussian filtering")
     columns = st.columns(3)
     columns[0].image(_bgr_to_rgb(image), caption="Original input")
     columns[1].image(enhancement.grey, caption="Grayscale")
     columns[2].image(enhancement.denoised, caption="Gaussian filtered")
 
-    st.header("3. Thresholding, morphology and contour detection")
-    segmentation = segment_tracks(
-        enhancement.enhanced,
-        segmentation_settings,
-        roi_margins,
-    )
+    st.header("Thresholding, morphology and contour detection")
     intermediate = segmentation.intermediate_images
     columns = st.columns(4)
     columns[0].image(
         intermediate["local_bright_tracks"],
-        caption="Morphological white top-hat: local bright tracks",
+        caption="Morphological Operation: White top-hat",
     )
-    columns[1].image(
-        intermediate["threshold"],
-        caption=(
-            f"Otsu + {segmentation.parameters['threshold_offset']:.0f} "
-            f"(applied value {segmentation.parameters['applied_threshold']:.0f})"
-        ),
-    )
+    columns[1].image(intermediate["threshold"], caption="Otsu thresholding")
     columns[2].image(
         intermediate["morphological_closing"],
-        caption="Closing first: reconnect short track gaps",
+        caption="Morphological operation: Closing",
     )
     columns[3].image(
         segmentation.binary_mask,
-        caption="Accepted regions after contour size/shape filtering",
+        caption="Contour detection and filtering",
     )
-    st.caption(
-        "Morphological opening is disabled to preserve very thin tracks. "
-        "Small dots are rejected afterward using area, length and elongation."
-    )
-    st.caption(
-        f"Small-blob filter: {segmentation.parameters['candidate_count_before_filter']} "
-        f"initial contours, {segmentation.parameters['rejected_candidate_count']} "
-        f"rejected, {segmentation.parameters['candidate_count_after_filter']} accepted."
-    )
-    with st.expander("Inspect rejected small/compact regions"):
-        st.image(
-            intermediate["rejected_small_blobs"],
-            caption=(
-                "White regions were rejected before feature extraction and "
-                "are therefore not sent to the classifiers."
-            ),
-        )
-        st.json(
-            {
-                "general-track minimum area (px^2)": segmentation.parameters[
-                    "minimum_area"
-                ],
-                "minimum major axis (px)": segmentation.parameters[
-                    "minimum_major_axis"
-                ],
-                "thin-track minimum area (px^2)": segmentation.parameters[
-                    "minimum_thin_area"
-                ],
-                "thin-track minimum perimeter (px)": segmentation.parameters[
-                    "minimum_thin_perimeter"
-                ],
-                "thin-track minimum major axis (px)": segmentation.parameters[
-                    "minimum_thin_major_axis"
-                ],
-                "thin-track minimum aspect ratio": segmentation.parameters[
-                    "minimum_thin_aspect_ratio"
-                ],
-            }
-        )
-    with st.expander("Inspect selected region of interest"):
-        roi = segmentation.parameters["roi_pixels"]
-        roi_preview = image.copy()
-        cv2.rectangle(
-            roi_preview,
-            (roi["left"], roi["top"]),
-            (roi["right"] - 1, roi["bottom"] - 1),
-            (255, 255, 0),
-            3,
-        )
-        st.image(
-            _bgr_to_rgb(roi_preview),
-            caption=(
-                "Only pixels inside the cyan rectangle are eligible for "
-                "accepted contours, features and bounding boxes."
-            ),
-        )
 
-    features = extract_track_features(
-        segmentation.binary_mask,
-        enhancement.enhanced,
-        minimum_area=float(segmentation_settings["minimum_object_area"]),
+    st.session_state["pipeline_result"] = result
+    # A changed image or segmentation produces different track IDs/features.
+    # Never display predictions cached for the previous pipeline result.
+    st.session_state["mlp_predictions"] = None
+    st.session_state["mlp_quality"] = None
+    st.session_state["batch_reports"].pop(
+        st.session_state.get("input_name"), None
     )
-    st.session_state["pipeline_result"] = {
-        "enhancement": enhancement,
-        "segmentation": segmentation,
-        "features": features,
-        "roi_profile": profile_name,
-    }
 
     overlay = image.copy()
     # These boxes come only from the accepted contours used to create the
@@ -267,11 +146,7 @@ def _shared_pipeline_page(config: dict) -> None:
         cv2.rectangle(overlay, (x, y), (x + width, y + height), (0, 255, 255), 2)
     st.image(_bgr_to_rgb(overlay), caption="Detected particle-track contours")
 
-    st.header("4. Contour-based feature extraction")
-    st.caption(
-        "These identical numerical features are the controlled input for all "
-        "five team-member classifiers."
-    )
+    st.header("Contour-based feature extraction")
     rows = [_feature_row(item) for item in features]
     if rows:
         st.dataframe(rows, use_container_width=True, hide_index=True)
@@ -279,26 +154,91 @@ def _shared_pipeline_page(config: dict) -> None:
         st.warning("No contour passed the configured minimum-area filter.")
 
 
-def _acquisition_section() -> None:
+def _process_pipeline_image(image: np.ndarray, config: dict) -> dict:
+    """Run the identical shared pipeline for one image without drawing UI."""
+    profile_name = _detect_layout_profile(image)
+    selected_profile = config["segmentation"]["roi_profiles"][profile_name]
+    roi_margins = {
+        side: selected_profile[side]
+        for side in ("left", "right", "top", "bottom")
+    }
+    segmentation_settings = {
+        **config["segmentation"],
+        **{
+            name: value
+            for name, value in selected_profile.items()
+            if name not in roi_margins
+        },
+    }
+    enhancement = enhance_image(image, config["enhancement"])
+    segmentation = segment_tracks(
+        enhancement.enhanced,
+        segmentation_settings,
+        roi_margins,
+    )
+    feature_minimum_area = float(segmentation_settings["minimum_object_area"])
+    if segmentation_settings.get("enable_thin_track_rule", True):
+        feature_minimum_area = min(
+            feature_minimum_area,
+            float(segmentation_settings["minimum_thin_area"]),
+        )
+    features = extract_track_features(
+        segmentation.binary_mask,
+        enhancement.enhanced,
+        minimum_area=feature_minimum_area,
+    )
+    return {
+        "enhancement": enhancement,
+        "segmentation": segmentation,
+        "features": features,
+        "roi_profile": profile_name,
+    }
+
+
+def _acquisition_section(config: dict) -> None:
+    """Acquire a batch of images or sampled video frames.
+
+    The processing stages still analyse one image at a time. Keeping all
+    acquired samples in a session batch lets the user move between them
+    without uploading the files again.
+    """
     source_type = st.radio("Input type", ["Image", "Video"], horizontal=True)
     if source_type == "Image":
-        upload = st.file_uploader(
-            "Upload a raw cloud-chamber image",
+        uploads = st.file_uploader(
+            "Upload one or more raw cloud-chamber images",
             type=["jpg", "jpeg", "png", "tif", "tiff"],
+            accept_multiple_files=True,
+        )
+        if uploads and st.button("Load image batch", type="primary"):
+            samples = []
+            failures = []
+            for upload in uploads:
+                try:
+                    samples.append(
+                        {
+                            "image": _decode_uploaded_image(upload.getvalue()),
+                            "name": upload.name,
+                            "description": f"Uploaded image: {upload.name}",
+                        }
+                    )
+                except ValueError:
+                    failures.append(upload.name)
+            _replace_input_batch(samples)
+            st.success(f"Loaded {len(samples)} image(s).")
+            if failures:
+                st.warning("Unreadable files skipped: " + ", ".join(failures))
+    else:
+        upload = st.file_uploader(
+            "Upload a cloud-chamber video", type=["mp4", "avi", "mov"]
         )
         if upload is not None:
-            image = _decode_uploaded_image(upload.getvalue())
-            _set_input(image, upload.name, "Uploaded image")
-            st.success("Image loaded.")
-        return
+            _video_acquisition(upload, config)
 
-    upload = st.file_uploader(
-        "Upload a cloud-chamber video", type=["mp4", "avi", "mov"]
-    )
-    if upload is None:
-        st.caption("Select one video frame; that frame is analysed as an image.")
-        return
+    _batch_selector()
 
+
+def _video_acquisition(upload, config: dict) -> None:
+    """Preview a video and acquire either one frame or a sampled frame batch."""
     with tempfile.NamedTemporaryFile(
         suffix=Path(upload.name).suffix, delete=False
     ) as temporary:
@@ -312,46 +252,147 @@ def _acquisition_section() -> None:
             return
         frame_count = max(int(capture.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
         fps = float(capture.get(cv2.CAP_PROP_FPS))
-        frame_number = st.slider("Frame number", 0, frame_count - 1, 0)
+        duration = frame_count / fps if fps > 0 else 0.0
+        st.caption(
+            f"{frame_count:,} frames | {fps:.2f} fps | {duration:.2f} seconds"
+        )
+
+        frame_number = st.slider("Preview frame", 0, frame_count - 1, 0)
         capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         success, frame = capture.read()
-        capture.release()
-        if not success:
-            st.error("The selected frame could not be captured.")
-            return
-        timestamp = frame_number / fps if fps > 0 else 0.0
-        st.image(
-            _bgr_to_rgb(frame),
-            caption=f"Frame {frame_number} ({timestamp:.2f} seconds)",
+        if success:
+            timestamp = frame_number / fps if fps > 0 else 0.0
+            st.image(
+                _bgr_to_rgb(frame),
+                caption=f"Frame {frame_number} ({timestamp:.2f} seconds)",
+            )
+            if st.button("Load preview frame only"):
+                sample = _video_sample(upload.name, frame, frame_number, fps)
+                _replace_input_batch([sample])
+
+        st.subheader("Video frame batch")
+        controls = st.columns(3)
+        start_frame = controls[0].number_input(
+            "Start frame", 0, frame_count - 1, 0, step=1
         )
-        if st.button("Use this frame for processing", type="primary"):
-            name = f"{Path(upload.name).stem}_frame_{frame_number:06d}"
-            _set_input(frame, name, f"{upload.name}, frame {frame_number}")
-            st.success("Video frame loaded.")
+        frame_interval = controls[1].number_input(
+            "Sample every N frames",
+            min_value=1,
+            max_value=frame_count,
+            value=min(int(config["acquisition"]["frame_interval"]), frame_count),
+            step=1,
+            help="A larger interval reduces near-duplicate neighbouring frames.",
+        )
+        maximum_frames = controls[2].number_input(
+            "Maximum frames", 1, 200, min(30, frame_count), step=1
+        )
+        if st.button("Extract video frame batch", type="primary"):
+            samples = []
+            for index in range(
+                int(start_frame), frame_count, int(frame_interval)
+            ):
+                if len(samples) >= int(maximum_frames):
+                    break
+                capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+                captured, sampled_frame = capture.read()
+                if captured:
+                    samples.append(
+                        _video_sample(upload.name, sampled_frame, index, fps)
+                    )
+            _replace_input_batch(samples)
+            st.success(f"Extracted {len(samples)} frame(s) from the video.")
+        capture.release()
     finally:
         video_path.unlink(missing_ok=True)
 
 
-def _model_page(short_name: str, full_name: str) -> None:
-    st.title(f"{short_name} Classifier")
-    st.info(
-        f"Purpose: team-member workspace for the {full_name}. This model must "
-        "use the shared dataset splits and shared processing pipeline."
-    )
-    module_name = short_name.lower().replace(" ", "_")
-    if short_name == "Extra Trees":
-        module_name = "extra_trees"
-    st.code(f"cloud_chamber/ml/member_models/{module_name}.py")
-    st.markdown(
-        """
-        The member implementation should provide training, validation,
-        prediction and model-saving functions. Do not duplicate or alter the
-        shared enhancement, segmentation or feature extraction stages.
+def _video_sample(
+    video_name: str, frame: np.ndarray, frame_number: int, fps: float
+) -> dict:
+    """Create traceable metadata for one acquired video frame."""
+    timestamp = frame_number / fps if fps > 0 else 0.0
+    return {
+        "image": frame.copy(),
+        "name": f"{Path(video_name).stem}_frame_{frame_number:06d}.jpg",
+        "description": (
+            f"{video_name}, frame {frame_number}, {timestamp:.2f} seconds"
+        ),
+    }
 
-        This page is intentionally a placeholder until the assigned member
-        connects their completed classifier.
-        """
+
+def _replace_input_batch(samples: list[dict]) -> None:
+    """Replace the acquisition queue and activate its first valid sample."""
+    st.session_state["input_batch"] = samples
+    st.session_state["mlp_batch_results"] = {}
+    st.session_state["batch_reports"] = {}
+    if samples:
+        first = samples[0]
+        _set_input(first["image"], first["name"], first["description"])
+
+
+def _batch_selector() -> None:
+    """Select the sample sent through the existing one-image pipeline."""
+    samples = st.session_state.get("input_batch", [])
+    if not samples:
+        st.caption("No acquisition batch has been loaded yet.")
+        return
+    st.subheader("Acquisition batch")
+    names = [sample["name"] for sample in samples]
+    current_name = st.session_state.get("input_name")
+    default_index = names.index(current_name) if current_name in names else 0
+    selected_index = st.selectbox(
+        f"Select an input to analyse ({len(samples)} available)",
+        range(len(samples)),
+        index=default_index,
+        format_func=lambda index: f"Image {index + 1}: {names[index]}",
     )
+    selected = samples[selected_index]
+    if selected["name"] != current_name:
+        _set_input(
+            selected["image"], selected["name"], selected["description"]
+        )
+    st.caption(selected["description"])
+
+    # Expanders keep a large upload readable: users first see Image 1,
+    # Image 2, etc., and reveal only the previews they want to inspect.
+    show_gallery = st.checkbox(
+        f"Show batch gallery ({len(samples)} image entries)", value=False
+    )
+    if show_gallery:
+        previews_per_page = 12
+        page_count = max(
+            1, (len(samples) + previews_per_page - 1) // previews_per_page
+        )
+        page = st.number_input(
+            "Preview page",
+            min_value=1,
+            max_value=page_count,
+            value=1,
+            step=1,
+            help=(
+                "Only 12 entries are placed on a page so a long video batch "
+                "does not overload the browser."
+            ),
+        )
+        start = (int(page) - 1) * previews_per_page
+        stop = min(start + previews_per_page, len(samples))
+        st.caption(f"Showing entries {start + 1}–{stop} of {len(samples)}.")
+        for index in range(start, stop):
+            sample = samples[index]
+            active_text = " — active input" if index == selected_index else ""
+            with st.expander(
+                f"Image {index + 1}: {sample['name']}{active_text}",
+                expanded=False,
+            ):
+                st.image(
+                    _bgr_to_rgb(sample["image"]),
+                    caption=sample["description"],
+                    use_container_width=True,
+                )
+
+
+def _model_page(short_name: str, full_name: str, config: dict) -> None:
+    st.title(f"{short_name} Classifier")
     if short_name != "MLP":
         return
 
@@ -367,21 +408,124 @@ def _model_page(short_name: str, full_name: str) -> None:
     if not model_path.exists():
         st.warning("Train the model first: `python scripts/train_mlp.py`")
         return
+    model_bundle = load_model(model_path)
     confidence_threshold = st.slider(
-        "Reporting confidence threshold",
+        "Confidence reporting threshold",
         min_value=0.0,
         max_value=1.0,
         value=0.60,
         step=0.05,
+        key="mlp_confidence_threshold",
         help=(
-            "Predictions below this probability remain visible but are marked "
-            "Uncertain. This threshold does not retrain the model."
+            "Predictions below this value are reported as uncertain. The "
+            "predicted class and trained model do not change."
         ),
     )
-    if st.button("Classify and create MLP report", type="primary"):
-        st.session_state["mlp_predictions"] = predict_tracks(
-            load_model(model_path), result["features"]
+    samples = st.session_state.get("input_batch") or [
+        {
+            "image": st.session_state["input_image"],
+            "name": st.session_state["input_name"],
+            "description": st.session_state["source_description"],
+        }
+    ]
+    button_label = (
+        f"Classify all {len(samples)} inputs and create reports"
+        if len(samples) > 1
+        else "Classify and create MLP report"
+    )
+    if st.button(button_label, type="primary"):
+        batch_results = {}
+        progress = st.progress(0.0, text="Processing batch...")
+        for index, sample in enumerate(samples):
+            sample_result = _process_pipeline_image(sample["image"], config)
+            sample_predictions = predict_tracks(
+                model_bundle, sample_result["features"]
+            )
+            sample_quality = assess_all_contours(
+                sample_result["features"],
+                sample_result["enhancement"].enhanced,
+                sample_result["segmentation"].binary_mask,
+                sample_result["segmentation"].parameters,
+            )
+            batch_results[sample["name"]] = {
+                "image": sample["image"],
+                "description": sample["description"],
+                "result": sample_result,
+                "predictions": sample_predictions,
+                "quality": sample_quality,
+            }
+            progress.progress(
+                (index + 1) / len(samples),
+                text=f"Processed {index + 1} of {len(samples)} inputs",
+            )
+        progress.empty()
+        st.session_state["mlp_batch_results"] = batch_results
+
+    batch_results = st.session_state.get("mlp_batch_results", {})
+    if batch_results:
+        st.subheader("Batch classification results")
+        for index, (name, entry) in enumerate(batch_results.items(), start=1):
+            item_predictions = entry["predictions"]
+            item_quality = entry["quality"]
+            item_result = entry["result"]
+            item_summary = build_summary(
+                predictions=item_predictions,
+                quality_assessments=item_quality,
+                confidence_threshold=confidence_threshold,
+                processing_time_ms=float(
+                    item_result["segmentation"].processing_time_ms
+                )
+                + sum(
+                    float(item["inference_time_ms"])
+                    for item in item_predictions
+                ),
+            )
+            st.session_state["batch_reports"][name] = {
+                "Input": name,
+                "Source": entry["description"],
+                "Tracks": item_summary["detected_contours"],
+                "Dominant prediction": item_summary["dominant_prediction"],
+                "Confident": item_summary["confident_classifications"],
+                "Uncertain": item_summary["uncertain_classifications"],
+                "Alpha": item_summary["class_counts"]["Alpha"],
+                "Electron/Positron": item_summary["class_counts"][
+                    "Electron/Positron"
+                ],
+                "Proton": item_summary["class_counts"]["Proton"],
+                "V-track": item_summary["class_counts"]["V-track"],
+                "Contour quality": item_summary["overall_contour_quality"],
+                "Mean quality score": item_summary["mean_contour_quality"],
+                "Processing time (ms)": item_summary["processing_time_ms"],
+            }
+            with st.expander(
+                f"Image {index}: {name} — "
+                f"{item_summary['detected_contours']} detected — "
+                f"dominant: {item_summary['dominant_prediction']}",
+                expanded=False,
+            ):
+                if item_predictions:
+                    item_overlay, _ = build_visual_report(
+                        image=entry["image"],
+                        features=item_result["features"],
+                        predictions=item_predictions,
+                        confidence_threshold=confidence_threshold,
+                        quality_assessments=item_quality,
+                    )
+                    st.image(_bgr_to_rgb(item_overlay), width=700)
+                else:
+                    st.warning("No segmented track was available to classify.")
+        selected_name = st.selectbox(
+            "Choose an input for the detailed report",
+            list(batch_results),
         )
+        selected_entry = batch_results[selected_name]
+        st.session_state["input_image"] = selected_entry["image"]
+        st.session_state["input_name"] = selected_name
+        st.session_state["source_description"] = selected_entry["description"]
+        st.session_state["pipeline_result"] = selected_entry["result"]
+        st.session_state["mlp_predictions"] = selected_entry["predictions"]
+        st.session_state["mlp_quality"] = selected_entry["quality"]
+        result = selected_entry["result"]
 
     predictions = st.session_state.get("mlp_predictions")
     if predictions is None:
@@ -389,29 +533,139 @@ def _model_page(short_name: str, full_name: str) -> None:
     if not predictions:
         st.warning("No segmented track is available for classification.")
         return
+    quality_assessments = st.session_state.get("mlp_quality")
+    if quality_assessments is None:
+        quality_assessments = assess_all_contours(
+            result["features"],
+            result["enhancement"].enhanced,
+            result["segmentation"].binary_mask,
+            result["segmentation"].parameters,
+        )
+        st.session_state["mlp_quality"] = quality_assessments
 
     overlay, report_rows = build_visual_report(
-        st.session_state["input_image"],
-        result["features"],
-        predictions,
-        confidence_threshold,
+        image=st.session_state["input_image"],
+        features=result["features"],
+        predictions=predictions,
+        confidence_threshold=confidence_threshold,
+        quality_assessments=quality_assessments,
     )
-    st.subheader("Particle classification report")
-    st.image(
-        _bgr_to_rgb(overlay),
-        caption=(
-            "MLP particle predictions. Yellow annotations are below the "
-            "selected confidence threshold."
+    for row, prediction, quality in zip(
+        report_rows, predictions, quality_assessments, strict=True
+    ):
+        row["Reporting decision"] = reporting_status(
+            confidence=float(prediction["confidence"]),
+            confidence_threshold=confidence_threshold,
+            quality_score=int(quality["score"]),
+        )
+
+    processing_time_ms = float(result["segmentation"].processing_time_ms) + sum(
+        float(item["inference_time_ms"]) for item in predictions
+    )
+    summary = build_summary(
+        predictions=predictions,
+        quality_assessments=quality_assessments,
+        confidence_threshold=confidence_threshold,
+        processing_time_ms=processing_time_ms,
+    )
+    metadata = make_traceability_metadata(
+        input_name=st.session_state["input_name"],
+        source_description=st.session_state["source_description"],
+        roi_profile=result["roi_profile"],
+        confidence_threshold=confidence_threshold,
+        model_path=str(model_path),
+        model_classes=model_bundle["classes"],
+        segmentation_parameters=result["segmentation"].parameters,
+    )
+    metadata["model_version"] = (
+        f"{model_path.stat().st_size}-{model_path.stat().st_mtime_ns}"
+    )
+    track_reports = []
+    for track, prediction, quality in zip(
+        result["features"], predictions, quality_assessments, strict=True
+    ):
+        track_reports.append(
+            {
+                "track_id": track.track_id,
+                "prediction": prediction,
+                "quality": quality,
+                "reporting_status": reporting_status(
+                    confidence=float(prediction["confidence"]),
+                    confidence_threshold=confidence_threshold,
+                    quality_score=int(quality["score"]),
+                ),
+                "features": _feature_row(track),
+            }
+        )
+    complete_report = {
+        "metadata": metadata,
+        "summary": summary,
+        "tracks": track_reports,
+        "interpretation_note": (
+            "Model confidence estimates class preference. Contour quality is "
+            "an explainable heuristic and is not a correctness probability."
         ),
+    }
+
+    st.subheader("Image-level result summary")
+    summary_columns = st.columns(6)
+    summary_columns[0].metric("Detected", summary["detected_contours"])
+    summary_columns[1].metric("Confident", summary["confident_classifications"])
+    summary_columns[2].metric("Uncertain", summary["uncertain_classifications"])
+    summary_columns[3].metric("Dominant", summary["dominant_prediction"])
+    summary_columns[4].metric(
+        "Contour quality",
+        f"{summary['overall_contour_quality']} ({summary['mean_contour_quality']:.0f})",
     )
-    st.dataframe(report_rows, use_container_width=True, hide_index=True)
-    st.caption(
-        "The label is the model's most likely class for each segmented "
-        "contour. It is a prediction, not direct physical confirmation."
+    summary_columns[5].metric("Processing", f"{processing_time_ms:.1f} ms")
+    st.dataframe(
+        [
+            {"Particle type": name, "Predicted count": count}
+            for name, count in summary["class_counts"].items()
+        ],
+        use_container_width=True,
+        hide_index=True,
     )
 
+    st.subheader("Annotated classification overview")
+    st.image(
+        _bgr_to_rgb(overlay),
+    )
+    st.markdown(
+        "**Legend:** 🟧 Alpha · 🟦 Electron/Positron · 🟩 Proton · "
+        "🟪 V-track · 🟨 Uncertain · Grey dashed: review segmentation"
+    )
+    st.dataframe(report_rows, use_container_width=True, hide_index=True)
+
+    _render_particle_evidence(
+        result["segmentation"].binary_mask,
+        result["features"],
+        predictions,
+        quality_assessments,
+        confidence_threshold,
+    )
+
+    batch_row = {
+        "Input": st.session_state["input_name"],
+        "Source": st.session_state["source_description"],
+        "Tracks": summary["detected_contours"],
+        "Dominant prediction": summary["dominant_prediction"],
+        "Confident": summary["confident_classifications"],
+        "Uncertain": summary["uncertain_classifications"],
+        "Alpha": summary["class_counts"]["Alpha"],
+        "Electron/Positron": summary["class_counts"]["Electron/Positron"],
+        "Proton": summary["class_counts"]["Proton"],
+        "V-track": summary["class_counts"]["V-track"],
+        "Contour quality": summary["overall_contour_quality"],
+        "Mean quality score": summary["mean_contour_quality"],
+        "Processing time (ms)": summary["processing_time_ms"],
+    }
+    st.session_state["batch_reports"][st.session_state["input_name"]] = batch_row
+    _render_batch_summary()
+
     safe_name = Path(st.session_state["input_name"]).stem
-    downloads = st.columns(2)
+    st.subheader("Download reproducible report")
+    downloads = st.columns(3)
     downloads[0].download_button(
         "Download annotated image",
         data=encode_report_png(overlay),
@@ -419,12 +673,100 @@ def _model_page(short_name: str, full_name: str) -> None:
         mime="image/png",
     )
     downloads[1].download_button(
-        "Download classification CSV",
+        "Particle CSV",
         data=encode_report_csv(report_rows),
         file_name=f"{safe_name}_mlp_report.csv",
         mime="text/csv",
     )
+    downloads[2].download_button(
+        "PDF summary",
+        data=encode_pdf_report(overlay, complete_report),
+        file_name=f"{safe_name}_mlp_report.pdf",
+        mime="application/pdf",
+    )
 
+
+def _render_particle_evidence(
+    binary_mask: np.ndarray,
+    features: list,
+    predictions: list[dict],
+    quality_assessments: list[dict],
+    confidence_threshold: float,
+) -> None:
+    st.subheader("Particle evidence cards")
+    items_per_page = 10
+    page_count = max(1, (len(features) + items_per_page - 1) // items_per_page)
+    page = st.number_input(
+        "Evidence page",
+        min_value=1,
+        max_value=page_count,
+        value=1,
+        step=1,
+        key=f"evidence_page_{st.session_state['input_name']}",
+    )
+    start = (int(page) - 1) * items_per_page
+    stop = min(start + items_per_page, len(features))
+    for track, prediction, quality in zip(
+        features[start:stop],
+        predictions[start:stop],
+        quality_assessments[start:stop],
+        strict=True,
+    ):
+        decision = reporting_status(
+            confidence=float(prediction["confidence"]),
+            confidence_threshold=confidence_threshold,
+            quality_score=int(quality["score"]),
+        )
+        title = (
+            f"T{track.track_id} — {prediction['particle_type']} "
+            f"({prediction['confidence']:.0%}) — {decision}"
+        )
+        with st.expander(title, expanded=False):
+            x, y, width, height = track.bounding_box
+            padding = 10
+            left = max(0, x - padding)
+            top = max(0, y - padding)
+            right = min(binary_mask.shape[1], x + width + padding)
+            bottom = min(binary_mask.shape[0], y + height + padding)
+            st.image(
+                binary_mask[top:bottom, left:right],
+                caption="Contour mask sent to feature extraction",
+                width=320,
+            )
+            st.markdown("**Class probability evidence**")
+            for class_name, probability in sorted(
+                prediction["probabilities"].items(),
+                key=lambda item: item[1],
+                reverse=True,
+            ):
+                st.progress(
+                    float(probability),
+                    text=(
+                        f"{DISPLAY_NAMES.get(class_name, class_name)}: "
+                        f"{probability:.1%}"
+                    ),
+                )
+            details = st.columns(2)
+            details[0].markdown(
+                f"**Contour quality:** {quality['grade']} "
+                f"({quality['score']}/100)  \n"
+                f"**Reporting decision:** {decision}  \n"
+                f"**Local contrast:** {quality['local_contrast']:.1f}"
+            )
+            details[1].dataframe(
+                [_feature_row(track)], use_container_width=True, hide_index=True
+            )
+            for item in quality["warnings"]:
+                st.warning(item)
+
+
+def _render_batch_summary() -> None:
+    """Show accumulated image/frame results from the current GUI session."""
+    rows = list(st.session_state.get("batch_reports", {}).values())
+    if not rows:
+        return
+    st.subheader("Batch and video-frame summary")
+    st.dataframe(rows, use_container_width=True, hide_index=True)
 
 def _extra_trees_page() -> None:
     """Beginner-friendly Extra Trees classification page."""
@@ -1311,6 +1653,7 @@ def _set_input(image: np.ndarray, name: str, description: str) -> None:
     st.session_state["pipeline_result"] = None
     st.session_state["mlp_predictions"] = None
     st.session_state["extra_trees_predictions"] = None
+    st.session_state["mlp_quality"] = None
 
 
 def _detect_layout_profile(image: np.ndarray) -> str:
@@ -1347,4 +1690,3 @@ def _bgr_to_rgb(image: np.ndarray) -> np.ndarray:
 
 if __name__ == "__main__":
     main()
-
