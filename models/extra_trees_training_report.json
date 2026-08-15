@@ -1,0 +1,283 @@
+{
+  "method": "ExtraTreesClassifier",
+  "training_split": "development",
+  "selection_split": "validation",
+  "untouched_evaluation_split": "final_test",
+  "candidate_results": [
+    {
+      "name": "Model A - Baseline",
+      "n_estimators": 100,
+      "max_features": "sqrt",
+      "max_depth": null,
+      "min_samples_leaf": 1,
+      "class_weight": null,
+      "validation_accuracy": 0.9705111402359109,
+      "validation_balanced_accuracy": 0.8997221784040472,
+      "validation_macro_f1": 0.9167002957248194
+    },
+    {
+      "name": "Model B - Balanced 300",
+      "n_estimators": 300,
+      "max_features": "sqrt",
+      "max_depth": null,
+      "min_samples_leaf": 1,
+      "class_weight": "balanced",
+      "validation_accuracy": 0.9698558322411533,
+      "validation_balanced_accuracy": 0.8915009865554345,
+      "validation_macro_f1": 0.9111282349731136
+    },
+    {
+      "name": "Model C - Balanced 500 Depth 20",
+      "n_estimators": 500,
+      "max_features": "sqrt",
+      "max_depth": 20,
+      "min_samples_leaf": 1,
+      "class_weight": "balanced",
+      "validation_accuracy": 0.9698558322411533,
+      "validation_balanced_accuracy": 0.8915009865554345,
+      "validation_macro_f1": 0.9143498358338378
+    },
+    {
+      "name": "Model D - Balanced 500 Leaf 2",
+      "n_estimators": 500,
+      "max_features": "sqrt",
+      "max_depth": 20,
+      "min_samples_leaf": 2,
+      "class_weight": "balanced",
+      "validation_accuracy": 0.9724770642201835,
+      "validation_balanced_accuracy": 0.9169488758267628,
+      "validation_macro_f1": 0.9153004028719823
+    }
+  ],
+  "selected_candidate": {
+    "name": "Model A - Baseline",
+    "n_estimators": 100,
+    "max_features": "sqrt",
+    "max_depth": null,
+    "min_samples_leaf": 1,
+    "class_weight": null
+  },
+  "best_validation_macro_f1": 0.9167002957248194,
+  "parameters": {
+    "bootstrap": false,
+    "ccp_alpha": 0.0,
+    "class_weight": null,
+    "criterion": "gini",
+    "max_depth": null,
+    "max_features": "sqrt",
+    "max_leaf_nodes": null,
+    "max_samples": null,
+    "min_impurity_decrease": 0.0,
+    "min_samples_leaf": 1,
+    "min_samples_split": 2,
+    "min_weight_fraction_leaf": 0.0,
+    "monotonic_cst": null,
+    "n_estimators": 100,
+    "n_jobs": -1,
+    "oob_score": false,
+    "random_state": 42,
+    "verbose": 0,
+    "warm_start": false
+  },
+  "feature_columns": [
+    "area_pixels",
+    "perimeter_pixels",
+    "major_axis_pixels",
+    "mean_width_pixels",
+    "orientation_degrees",
+    "aspect_ratio",
+    "solidity",
+    "rectangularity",
+    "thickness_pixels",
+    "mean_intensity"
+  ],
+  "classes": [
+    "alpha",
+    "electron_positron",
+    "proton"
+  ],
+  "class_counts": {
+    "development": {
+      "alpha": 1366,
+      "electron_positron": 3504,
+      "proton": 264
+    },
+    "validation": {
+      "alpha": 425,
+      "electron_positron": 1058,
+      "proton": 43
+    },
+    "final_test": {
+      "alpha": 296,
+      "electron_positron": 1108,
+      "proton": 63
+    }
+  },
+  "validation": {
+    "sample_count": 1526,
+    "accuracy": 0.9705111402359109,
+    "balanced_accuracy": 0.8997221784040472,
+    "macro_f1": 0.9167002957248194,
+    "weighted_f1": 0.9701372165385141,
+    "class_names": [
+      "alpha",
+      "electron_positron",
+      "proton"
+    ],
+    "confusion_matrix": [
+      [
+        400,
+        22,
+        3
+      ],
+      [
+        8,
+        1048,
+        2
+      ],
+      [
+        8,
+        2,
+        33
+      ]
+    ],
+    "classification_report": {
+      "alpha": {
+        "precision": 0.9615384615384616,
+        "recall": 0.9411764705882353,
+        "f1-score": 0.9512485136741974,
+        "support": 425.0
+      },
+      "electron_positron": {
+        "precision": 0.9776119402985075,
+        "recall": 0.9905482041587902,
+        "f1-score": 0.984037558685446,
+        "support": 1058.0
+      },
+      "proton": {
+        "precision": 0.868421052631579,
+        "recall": 0.7674418604651163,
+        "f1-score": 0.8148148148148148,
+        "support": 43.0
+      },
+      "accuracy": 0.9705111402359109,
+      "macro avg": {
+        "precision": 0.9358571514895161,
+        "recall": 0.8997221784040472,
+        "f1-score": 0.9167002957248194,
+        "support": 1526.0
+      },
+      "weighted avg": {
+        "precision": 0.9700585742154817,
+        "recall": 0.9705111402359109,
+        "f1-score": 0.9701372165385141,
+        "support": 1526.0
+      }
+    }
+  },
+  "final_test": {
+    "sample_count": 1467,
+    "accuracy": 0.9645535105657805,
+    "balanced_accuracy": 0.9087938505808543,
+    "macro_f1": 0.925796562717323,
+    "weighted_f1": 0.9644976488782644,
+    "class_names": [
+      "alpha",
+      "electron_positron",
+      "proton"
+    ],
+    "confusion_matrix": [
+      [
+        277,
+        18,
+        1
+      ],
+      [
+        20,
+        1087,
+        1
+      ],
+      [
+        12,
+        0,
+        51
+      ]
+    ],
+    "classification_report": {
+      "alpha": {
+        "precision": 0.8964401294498382,
+        "recall": 0.9358108108108109,
+        "f1-score": 0.915702479338843,
+        "support": 296.0
+      },
+      "electron_positron": {
+        "precision": 0.983710407239819,
+        "recall": 0.9810469314079422,
+        "f1-score": 0.98237686398554,
+        "support": 1108.0
+      },
+      "proton": {
+        "precision": 0.9622641509433962,
+        "recall": 0.8095238095238095,
+        "f1-score": 0.8793103448275862,
+        "support": 63.0
+      },
+      "accuracy": 0.9645535105657805,
+      "macro avg": {
+        "precision": 0.9474715625443512,
+        "recall": 0.9087938505808543,
+        "f1-score": 0.925796562717323,
+        "support": 1467.0
+      },
+      "weighted avg": {
+        "precision": 0.9651806755612172,
+        "recall": 0.9645535105657805,
+        "f1-score": 0.9644976488782644,
+        "support": 1467.0
+      }
+    }
+  },
+  "feature_importance": [
+    {
+      "feature": "mean_intensity",
+      "importance": 0.29379876837835284
+    },
+    {
+      "feature": "thickness_pixels",
+      "importance": 0.21093305551479472
+    },
+    {
+      "feature": "mean_width_pixels",
+      "importance": 0.1683679814776736
+    },
+    {
+      "feature": "solidity",
+      "importance": 0.07144554873086877
+    },
+    {
+      "feature": "rectangularity",
+      "importance": 0.059112616361232946
+    },
+    {
+      "feature": "area_pixels",
+      "importance": 0.055680469664064154
+    },
+    {
+      "feature": "major_axis_pixels",
+      "importance": 0.04654109203507692
+    },
+    {
+      "feature": "perimeter_pixels",
+      "importance": 0.04243558609606314
+    },
+    {
+      "feature": "aspect_ratio",
+      "importance": 0.04048683882608741
+    },
+    {
+      "feature": "orientation_degrees",
+      "importance": 0.011198042915785496
+    }
+  ],
+  "model_path": "C:\\CloudChamber\\CloudChamberDetector\\models\\extra_trees_classifier.joblib"
+}
