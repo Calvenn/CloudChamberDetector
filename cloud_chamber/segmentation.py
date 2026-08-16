@@ -35,6 +35,69 @@ def segment_tracks(
     _, threshold_mask = cv2.threshold(
         local_bright, threshold_value, 255, cv2.THRESH_BINARY
     )
+    # Optional Otsu-derived hysteresis retains faint extensions only when they
+    # belong to a low-threshold component containing reliable high-threshold
+    # pixels. Unlike simply lowering Otsu, isolated dim background texture has
+    # no strong seed and is discarded.
+    low_threshold_offset = float(
+        settings.get("hysteresis_low_threshold_offset", settings["threshold_offset"])
+    )
+    hysteresis_seed_pixels = int(settings.get("hysteresis_seed_pixels", 1))
+    low_threshold_value = min(255.0, otsu_value + low_threshold_offset)
+    hysteresis_applied = low_threshold_value < threshold_value
+    if hysteresis_applied:
+        _, low_mask = cv2.threshold(
+            local_bright, low_threshold_value, 255, cv2.THRESH_BINARY
+        )
+        component_count, component_labels = cv2.connectedComponents(
+            low_mask, connectivity=8
+        )
+        seed_counts = np.bincount(
+            component_labels[threshold_mask > 0], minlength=component_count
+        )
+        keep_component = seed_counts >= hysteresis_seed_pixels
+        keep_component[0] = False
+        threshold_mask = np.where(
+            keep_component[component_labels], 255, 0
+        ).astype(np.uint8)
+
+    # Optional thin-line branch. The faint mask is opened with short line
+    # elements at several orientations. Compact droplets cannot contain the
+    # line element, while locally straight parts of a one-pixel track can.
+    thin_line_length = int(settings.get("thin_line_opening_length", 1))
+    thin_line_threshold_offset = float(
+        settings.get("thin_line_threshold_offset", low_threshold_offset)
+    )
+    thin_line_mask = np.zeros_like(threshold_mask)
+    if thin_line_length > 1:
+        if thin_line_length % 2 == 0:
+            raise ValueError("thin_line_opening_length must be odd")
+        _, faint_mask = cv2.threshold(
+            local_bright,
+            min(255.0, otsu_value + thin_line_threshold_offset),
+            255,
+            cv2.THRESH_BINARY,
+        )
+        centre = thin_line_length // 2
+        for angle_degrees in range(0, 180, 15):
+            radians = np.deg2rad(angle_degrees)
+            dx = int(round(centre * np.cos(radians)))
+            dy = int(round(centre * np.sin(radians)))
+            line_kernel = np.zeros(
+                (thin_line_length, thin_line_length), dtype=np.uint8
+            )
+            cv2.line(
+                line_kernel,
+                (centre - dx, centre - dy),
+                (centre + dx, centre + dy),
+                1,
+                1,
+            )
+            oriented = cv2.morphologyEx(
+                faint_mask, cv2.MORPH_OPEN, line_kernel, iterations=1
+            )
+            thin_line_mask = cv2.bitwise_or(thin_line_mask, oriented)
+        threshold_mask = cv2.bitwise_or(threshold_mask, thin_line_mask)
 
     image_height, image_width = enhanced_image.shape
     margins = roi_margins or {side: 0.0 for side in ("left", "right", "top", "bottom")}
@@ -65,6 +128,37 @@ def segment_tracks(
         closing_kernel,
         iterations=int(settings["closing_iterations"]),
     )
+    # A long circular kernel joins objects in every direction and previously
+    # merged unrelated droplets into giant boxes. Optional one-pixel line
+    # kernels reconnect only fragments that are aligned along a likely track.
+    directional_length = int(settings.get("directional_closing_length", 1))
+    if directional_length > 1:
+        if directional_length % 2 == 0:
+            raise ValueError("directional_closing_length must be odd")
+        centre = directional_length // 2
+        directional_closed = closed.copy()
+        for angle_degrees in range(0, 180, 30):
+            angle = np.deg2rad(angle_degrees)
+            dx = int(round(centre * np.cos(angle)))
+            dy = int(round(centre * np.sin(angle)))
+            line_kernel = np.zeros(
+                (directional_length, directional_length), dtype=np.uint8
+            )
+            cv2.line(
+                line_kernel,
+                (centre - dx, centre - dy),
+                (centre + dx, centre + dy),
+                1,
+                1,
+            )
+            aligned = cv2.morphologyEx(
+                threshold_mask,
+                cv2.MORPH_CLOSE,
+                line_kernel,
+                iterations=1,
+            )
+            directional_closed = cv2.bitwise_or(directional_closed, aligned)
+        closed = cv2.bitwise_and(directional_closed, roi_mask)
     opening_applied = bool(settings.get("apply_opening", True))
     if opening_applied:
         refined = cv2.morphologyEx(
@@ -138,6 +232,20 @@ def segment_tracks(
     clean_mask = np.zeros_like(refined)
     if contours:
         cv2.drawContours(clean_mask, contours, -1, 255, cv2.FILLED)
+    alignment_merge_gap = float(settings.get("alignment_merge_gap", 0))
+    alignment_merge_angle = float(settings.get("alignment_merge_angle", 25))
+    alignment_merge_minimum_aspect = float(
+        settings.get("alignment_merge_minimum_aspect", 2.5)
+    )
+    alignment_links = 0
+    if alignment_merge_gap > 0 and len(contours) > 1:
+        clean_mask, alignment_links = _link_aligned_contours(
+            clean_mask,
+            contours,
+            maximum_gap=alignment_merge_gap,
+            maximum_angle_difference=alignment_merge_angle,
+            minimum_aspect_ratio=alignment_merge_minimum_aspect,
+        )
     # Re-read contours from the final accepted mask. This guarantees that the
     # returned contours and bounding boxes describe exactly the same white
     # regions shown in the GUI and later used for feature extraction.
@@ -162,6 +270,7 @@ def segment_tracks(
             "local_bright_tracks": local_bright,
             "region_of_interest": roi_mask,
             "threshold": threshold_mask,
+            "thin_line_candidates": thin_line_mask,
             "morphological_closing": closed,
             "morphological_opening": refined,
             "rejected_small_blobs": rejected_mask,
@@ -172,7 +281,17 @@ def segment_tracks(
             "otsu_value": float(otsu_value),
             "threshold_offset": float(settings["threshold_offset"]),
             "applied_threshold": float(threshold_value),
+            "hysteresis_applied": hysteresis_applied,
+            "hysteresis_low_threshold_offset": low_threshold_offset,
+            "hysteresis_low_threshold_value": float(low_threshold_value),
+            "hysteresis_seed_pixels": hysteresis_seed_pixels,
+            "thin_line_opening_length": thin_line_length,
+            "thin_line_threshold_offset": thin_line_threshold_offset,
+            "thin_line_pixels": int(np.count_nonzero(thin_line_mask)),
             "closing_kernel": closing_size,
+            "directional_closing_length": directional_length,
+            "alignment_merge_gap": alignment_merge_gap,
+            "alignment_links_created": alignment_links,
             "opening_kernel": opening_size,
             "opening_applied": opening_applied,
             "minimum_area": minimum_area,
@@ -193,3 +312,93 @@ def segment_tracks(
             },
         },
     )
+
+
+def _angle_difference(first: float, second: float) -> float:
+    """Return the smallest difference between two undirected line angles."""
+    difference = abs(first - second) % 180.0
+    return min(difference, 180.0 - difference)
+
+
+def _contour_axis(contour: np.ndarray) -> dict[str, object]:
+    """Describe the centre, endpoints and direction of a contour's major axis."""
+    (centre_x, centre_y), (side_a, side_b), rectangle_angle = cv2.minAreaRect(contour)
+    if side_a >= side_b:
+        major_axis = float(side_a)
+        minor_axis = float(side_b)
+        angle = float(rectangle_angle)
+    else:
+        major_axis = float(side_b)
+        minor_axis = float(side_a)
+        angle = float(rectangle_angle + 90.0)
+    radians = np.deg2rad(angle)
+    direction = np.asarray([np.cos(radians), np.sin(radians)], dtype=np.float64)
+    centre = np.asarray([centre_x, centre_y], dtype=np.float64)
+    half_axis = direction * (major_axis / 2.0)
+    return {
+        "angle": angle % 180.0,
+        "aspect": major_axis / minor_axis if minor_axis > 0 else 0.0,
+        "endpoints": (centre - half_axis, centre + half_axis),
+    }
+
+
+def _link_aligned_contours(
+    mask: np.ndarray,
+    contours: list[np.ndarray],
+    maximum_gap: float,
+    maximum_angle_difference: float,
+    minimum_aspect_ratio: float,
+) -> tuple[np.ndarray, int]:
+    """Join nearby collinear accepted fragments using one-pixel connectors.
+
+    Both fragments must already pass the contour filters, both must be
+    elongated, and the closest major-axis endpoints must align with both track
+    directions. Consequently a nearby round droplet is not used as a bridge.
+    """
+    descriptions = [_contour_axis(contour) for contour in contours]
+    linked = mask.copy()
+    link_count = 0
+    for first_index, first in enumerate(descriptions):
+        if float(first["aspect"]) < minimum_aspect_ratio:
+            continue
+        for second in descriptions[first_index + 1 :]:
+            if float(second["aspect"]) < minimum_aspect_ratio:
+                continue
+            if _angle_difference(
+                float(first["angle"]), float(second["angle"])
+            ) > maximum_angle_difference:
+                continue
+
+            endpoint_pairs = [
+                (first_point, second_point)
+                for first_point in first["endpoints"]
+                for second_point in second["endpoints"]
+            ]
+            start, stop = min(
+                endpoint_pairs,
+                key=lambda pair: float(np.linalg.norm(pair[1] - pair[0])),
+            )
+            connector = stop - start
+            distance = float(np.linalg.norm(connector))
+            if distance == 0 or distance > maximum_gap:
+                continue
+            connector_angle = float(
+                np.degrees(np.arctan2(connector[1], connector[0])) % 180.0
+            )
+            if (
+                _angle_difference(connector_angle, float(first["angle"]))
+                > maximum_angle_difference
+                or _angle_difference(connector_angle, float(second["angle"]))
+                > maximum_angle_difference
+            ):
+                continue
+            cv2.line(
+                linked,
+                tuple(np.rint(start).astype(int)),
+                tuple(np.rint(stop).astype(int)),
+                255,
+                1,
+                cv2.LINE_8,
+            )
+            link_count += 1
+    return linked, link_count
