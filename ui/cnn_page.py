@@ -4,206 +4,310 @@ from pathlib import Path
 
 import numpy as np
 import streamlit as st
-import torch
 
-from cloud_chamber.ml.member_models.cnn import FeatureTrackCNN, build_class_mapping
-from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
+from cloud_chamber.ml.member_models.cnn import (
+    DISPLAY_NAMES,
+    build_visual_report,
+    encode_report_csv,
+    encode_report_png,
+    load_model,
+    predict_tracks,
+)
+from cloud_chamber.reporting import (
+    assess_all_contours,
+    build_summary,
+    encode_pdf_report,
+    make_traceability_metadata,
+    reporting_status,
+)
+from cloud_chamber.ui.model_pages.context import PageContext
 
 
 MODEL_PATH = Path("models/cnn_classifier.pth")
-DISPLAY_LABELS = {
-    "alpha": "Alpha",
-    "electron_positron": "Electron / Positron (beta-like)",
-    "proton": "Proton",
-}
+TRAIN_COMMAND = "python -m cloud_chamber.ml.member_models.cnn"
 
 
-def render_cnn_page() -> None:
-    st.subheader("CNN result and reporting")
-    st.caption(
-        "This page follows the shared feature-contract rule: the same contour "
-        "features are used for prediction as in the other models, and the model "
-        "output is reported in a concise, useful summary."
-    )
+def render_cnn_page(config: dict, context: PageContext) -> None:
+    """Render the CNN panel in the same shared flow as the other model pages."""
+    st.title("CNN Classifier")
 
+    model_key = "cnn"
+    state_key = f"{model_key}_predictions"
+    quality_state_key = f"{model_key}_quality"
+    batch_state_key = f"{model_key}_batch_results"
+
+    st.subheader("Run the trained CNN")
     result = st.session_state.get("pipeline_result")
     if result is None:
-        st.warning("Process an image or video frame on the Shared Processing Pipeline page first.")
+        st.warning(
+            "Process an image or video frame on the Shared Processing "
+            "Pipeline page first."
+        )
         return
 
     if not MODEL_PATH.exists():
-        st.warning("Train the CNN first with: `python -m cloud_chamber.ml.member_models.cnn`")
+        st.warning(f"Train the model first: `{TRAIN_COMMAND}`")
         return
 
+    model_bundle = load_model(MODEL_PATH)
     confidence_threshold = st.slider(
-        "Reporting confidence threshold",
+        "Confidence reporting threshold",
         min_value=0.0,
         max_value=1.0,
         value=0.60,
         step=0.05,
+        key="cnn_confidence_threshold",
+        help=(
+            "Predictions below this value are reported as uncertain. The "
+            "predicted class and trained model do not change."
+        ),
     )
 
-    if st.button("Classify with CNN", type="primary"):
-        predictions = _predict_from_current_features(result["features"])
-        st.session_state["cnn_predictions"] = predictions
+    samples = st.session_state.get("input_batch") or [
+        {
+            "image": st.session_state["input_image"],
+            "name": st.session_state["input_name"],
+            "description": st.session_state["source_description"],
+        }
+    ]
+    button_label = (
+        f"Classify all {len(samples)} inputs and create CNN reports"
+        if len(samples) > 1
+        else "Classify and create CNN report"
+    )
 
-    predictions = st.session_state.get("cnn_predictions")
+    if st.button(button_label, type="primary"):
+        batch_results = {}
+        progress = st.progress(0.0, text="Processing batch...")
+        for index, sample in enumerate(samples):
+            sample_result = context.process_pipeline_image(
+                sample["image"],
+                config,
+                st.session_state.get("calibration_settings"),
+            )
+            sample_predictions = predict_tracks(
+                model_bundle, sample_result["features"]
+            )
+            sample_quality = assess_all_contours(
+                sample_result["features"],
+                sample_result["enhancement"].enhanced,
+                sample_result["segmentation"].binary_mask,
+                sample_result["segmentation"].parameters,
+            )
+            batch_results[sample["name"]] = {
+                "image": sample["image"],
+                "analysis_image": sample_result["input_image"],
+                "description": sample["description"],
+                "result": sample_result,
+                "predictions": sample_predictions,
+                "quality": sample_quality,
+            }
+            progress.progress(
+                (index + 1) / len(samples),
+                text=f"Processed {index + 1} of {len(samples)} inputs",
+            )
+        progress.empty()
+        st.session_state[batch_state_key] = batch_results
+
+    batch_results = st.session_state.get(batch_state_key, {})
+    if batch_results:
+        st.subheader("Batch classification results")
+        for index, (name, entry) in enumerate(batch_results.items(), start=1):
+            item_predictions = entry["predictions"]
+            item_quality = entry["quality"]
+            item_result = entry["result"]
+            item_summary = build_summary(
+                predictions=item_predictions,
+                quality_assessments=item_quality,
+                confidence_threshold=confidence_threshold,
+                processing_time_ms=float(
+                    item_result["segmentation"].processing_time_ms
+                ) + sum(float(item["inference_time_ms"]) for item in item_predictions),
+            )
+            st.session_state["batch_reports"][name] = {
+                "Input": name,
+                "Source": entry["description"],
+                "Tracks": item_summary["detected_contours"],
+                "Dominant prediction": item_summary["dominant_prediction"],
+                "Confident": item_summary["confident_classifications"],
+                "Uncertain": item_summary["uncertain_classifications"],
+                "Alpha": item_summary["class_counts"]["Alpha"],
+                "Electron/Positron": item_summary["class_counts"]["Electron/Positron"],
+                "Proton": item_summary["class_counts"]["Proton"],
+                "V-track": item_summary["class_counts"]["V-track"],
+                "Contour quality": item_summary["overall_contour_quality"],
+                "Mean quality score": item_summary["mean_contour_quality"],
+                "Processing time (ms)": item_summary["processing_time_ms"],
+            }
+            with st.expander(
+                f"Image {index}: {name} — "
+                f"{item_summary['detected_contours']} detected — "
+                f"dominant: {item_summary['dominant_prediction']}",
+                expanded=False,
+            ):
+                if item_predictions:
+                    item_overlay, _ = build_visual_report(
+                        image=entry["analysis_image"],
+                        features=item_result["features"],
+                        predictions=item_predictions,
+                        confidence_threshold=confidence_threshold,
+                    )
+                    st.image(context.bgr_to_rgb(item_overlay), width=700)
+                else:
+                    st.warning("No segmented track was available to classify.")
+
+        selected_name = st.selectbox(
+            "Choose an input for the detailed report",
+            list(batch_results),
+        )
+        selected_entry = batch_results[selected_name]
+        st.session_state["input_image"] = selected_entry["image"]
+        st.session_state["input_name"] = selected_name
+        st.session_state["source_description"] = selected_entry["description"]
+        st.session_state["pipeline_result"] = selected_entry["result"]
+        st.session_state[state_key] = selected_entry["predictions"]
+        st.session_state[quality_state_key] = selected_entry["quality"]
+        result = selected_entry["result"]
+
+    predictions = st.session_state.get(state_key)
     if predictions is None:
         return
-
     if not predictions:
-        st.warning("No segmented track is available for CNN classification.")
+        st.warning("No segmented track is available for classification.")
         return
 
-    st.subheader("CNN classification summary")
-    report = _summarise_predictions(predictions, confidence_threshold)
+    quality_assessments = st.session_state.get(quality_state_key)
+    if quality_assessments is None:
+        quality_assessments = assess_all_contours(
+            result["features"],
+            result["enhancement"].enhanced,
+            result["segmentation"].binary_mask,
+            result["segmentation"].parameters,
+        )
+        st.session_state[quality_state_key] = quality_assessments
 
-    st.markdown("### Particle result overview")
-    overview = st.columns(len(report["cards"])) if report["cards"] else st.columns(1)
-    for idx, card in enumerate(report["cards"]):
-        with overview[idx]:
-            label = card["label"]
-            display_name = DISPLAY_LABELS.get(label, label)
-            colour = "#4caf50" if label in {"alpha", "proton"} else "#ffb703"
-            st.markdown(
-                f"<div style='border: 1px solid {colour}; border-radius: 10px; padding: 12px; background: rgba(255,255,255,0.02);'>"
-                f"<h4 style='margin: 0 0 8px 0; color: {colour};'>{card['title']}</h4>"
-                f"<p style='margin: 4px 0;'><b>Predicted:</b> {display_name}</p>"
-                f"<p style='margin: 4px 0;'><b>Confidence:</b> {card['confidence']:.2%}</p>"
-                f"<p style='margin: 4px 0;'><b>Status:</b> {card['status']}</p>"
-                f"</div>",
-                unsafe_allow_html=True,
+    overlay, report_rows = build_visual_report(
+        image=result["input_image"],
+        features=result["features"],
+        predictions=predictions,
+        confidence_threshold=confidence_threshold,
+    )
+
+    for row, track, prediction, quality in zip(
+        report_rows,
+        result["features"],
+        predictions,
+        quality_assessments,
+        strict=True,
+    ):
+        row["Reporting decision"] = reporting_status(
+            confidence=float(prediction["confidence"]),
+            confidence_threshold=confidence_threshold,
+            quality_score=int(quality["score"]),
+        )
+        if result["centimetres_per_pixel"] is not None:
+            calibrated = context.feature_row(
+                track, result["centimetres_per_pixel"]
+            )
+            row.update(
+                {
+                    name: value
+                    for name, value in calibrated.items()
+                    if name.endswith("(cm)") or name.endswith("(cm²)")
+                }
             )
 
-    st.markdown("### Class breakdown")
-    class_summary = report["class_summary"]
-    class_df = [
-        {
-            "Particle type": DISPLAY_LABELS.get(label, label),
-            "Count": count,
-            "Mean confidence": class_summary[label]["mean_confidence"],
-        }
-        for label, count in sorted(class_summary.items())
-    ]
-    st.dataframe(class_df, use_container_width=True, hide_index=True)
+    processing_time_ms = float(result["segmentation"].processing_time_ms) + sum(
+        float(item["inference_time_ms"]) for item in predictions
+    )
+    summary = build_summary(
+        predictions=predictions,
+        quality_assessments=quality_assessments,
+        confidence_threshold=confidence_threshold,
+        processing_time_ms=processing_time_ms,
+    )
+    metadata = make_traceability_metadata(
+        input_name=st.session_state["input_name"],
+        source_description=st.session_state["source_description"],
+        roi_profile=result["roi_profile"],
+        confidence_threshold=confidence_threshold,
+        model_path=str(MODEL_PATH),
+        model_classes=model_bundle["classes"],
+        segmentation_parameters=result["segmentation"].parameters,
+    )
+    metadata["model_version"] = (
+        f"{MODEL_PATH.stat().st_size}-{MODEL_PATH.stat().st_mtime_ns}"
+    )
+    metadata["calibration"] = {
+        "enabled": result["centimetres_per_pixel"] is not None,
+        "centimetres_per_pixel": result["centimetres_per_pixel"],
+        "perspective_rectified": result["rectified"],
+    }
 
-    st.markdown("### Detailed track-level result")
-    display_table = []
-    for row in report["table"]:
-        display_row = dict(row)
-        display_row["Predicted class"] = DISPLAY_LABELS.get(display_row["Predicted class"], display_row["Predicted class"])
-        display_table.append(display_row)
-    st.dataframe(display_table, use_container_width=True, hide_index=True)
+    st.subheader("Image-level result summary")
+    summary_columns = st.columns(6)
+    summary_columns[0].metric("Detected", summary["detected_contours"])
+    summary_columns[1].metric("Confident", summary["confident_classifications"])
+    summary_columns[2].metric("Uncertain", summary["uncertain_classifications"])
+    summary_columns[3].metric("Dominant", summary["dominant_prediction"])
+    summary_columns[4].metric(
+        "Contour quality",
+        f"{summary['overall_contour_quality']} ({summary['mean_contour_quality']:.0f})",
+    )
+    summary_columns[5].metric("Processing", f"{processing_time_ms:.1f} ms")
 
-    st.markdown("### Summary")
-    st.json({
-        "Total tracked objects": report["summary"]["Total tracked objects"],
-        "Predicted class counts": {
-            DISPLAY_LABELS.get(key, key): value for key, value in report["summary"]["Predicted class counts"].items()
-        },
-        "Mean confidence": report["summary"]["Mean confidence"],
-        "Low-confidence predictions": report["summary"]["Low-confidence predictions"],
-    })
+    st.dataframe(
+        [
+            {"Particle type": name, "Predicted count": count}
+            for name, count in summary["class_counts"].items()
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
 
-    safe_name = Path(st.session_state.get("input_name", "cnn_result")).stem
-    st.download_button(
-        "Download CNN CSV report",
-        data=report["csv"],
+    st.subheader("Annotated classification overview")
+    st.image(context.bgr_to_rgb(overlay))
+    st.markdown(
+        "**Legend:** 🟧 Alpha · 🟦 Electron/Positron · 🟩 Proton · "
+        "🟨 Uncertain"
+    )
+    st.dataframe(report_rows, use_container_width=True, hide_index=True)
+
+    batch_row = {
+        "Input": st.session_state["input_name"],
+        "Source": st.session_state["source_description"],
+        "Tracks": summary["detected_contours"],
+        "Dominant prediction": summary["dominant_prediction"],
+        "Confident": summary["confident_classifications"],
+        "Uncertain": summary["uncertain_classifications"],
+        "Alpha": summary["class_counts"]["Alpha"],
+        "Electron/Positron": summary["class_counts"]["Electron/Positron"],
+        "Proton": summary["class_counts"]["Proton"],
+        "V-track": summary["class_counts"]["V-track"],
+        "Contour quality": summary["overall_contour_quality"],
+        "Mean quality score": summary["mean_contour_quality"],
+        "Processing time (ms)": summary["processing_time_ms"],
+    }
+    st.session_state["batch_reports"][st.session_state["input_name"]] = batch_row
+
+    safe_name = Path(st.session_state["input_name"]).stem
+    st.subheader("Download reproducible report")
+    downloads = st.columns(3)
+    downloads[0].download_button(
+        "Download annotated image",
+        data=encode_report_png(overlay),
+        file_name=f"{safe_name}_cnn_report.png",
+        mime="image/png",
+    )
+    downloads[1].download_button(
+        "Particle CSV",
+        data=encode_report_csv(report_rows),
         file_name=f"{safe_name}_cnn_report.csv",
         mime="text/csv",
     )
-
-
-def _predict_from_current_features(features) -> list[dict]:
-    payload = torch.load(MODEL_PATH, map_location="cpu")
-    class_mapping = build_class_mapping()
-    model = FeatureTrackCNN(input_dim=len(FEATURE_COLUMNS), num_classes=len(class_mapping))
-    model.load_state_dict(payload["model_state"])
-    model.eval()
-
-    rows = []
-    inv_mapping = {value: key for key, value in class_mapping.items()}
-    with torch.no_grad():
-        for track in features:
-            feature_values = []
-            for column in FEATURE_COLUMNS:
-                feature_values.append(float(getattr(track, column)))
-            x = torch.tensor([feature_values], dtype=torch.float32)
-            logits = model(x)
-            probabilities = torch.softmax(logits, dim=1)[0]
-            confidence, index = torch.max(probabilities, dim=0)
-            rows.append(
-                {
-                    "track_id": track.track_id,
-                    "true_label": "unknown",
-                    "predicted_label": inv_mapping[int(index.item())],
-                    "confidence": round(float(confidence.item()), 4),
-                    "probabilities": {
-                        inv_mapping[i]: round(float(probabilities[i].item()), 4)
-                        for i in range(len(probabilities))
-                    },
-                }
-            )
-    return rows
-
-
-def _summarise_predictions(predictions: list[dict], threshold: float) -> dict:
-    table_rows = []
-    counts = {}
-    cards = []
-
-    for row in predictions:
-        label = row["predicted_label"]
-        counts[label] = counts.get(label, 0) + 1
-        status = "Uncertain" if row["confidence"] < threshold else "Accepted"
-        table_rows.append(
-            {
-                "Track": row["track_id"],
-                "Predicted class": label,
-                "Confidence": row["confidence"],
-                "Status": status,
-                **{f"P({name})": probability for name, probability in row["probabilities"].items()},
-            }
-        )
-
-        cards.append(
-            {
-                "title": f"Track {row['track_id']}",
-                "label": label,
-                "predicted": label,
-                "confidence": row["confidence"],
-                "status": status,
-            }
-        )
-
-    class_summary = {}
-    for label, count in counts.items():
-        class_scores = [row["confidence"] for row in predictions if row["predicted_label"] == label]
-        class_summary[label] = {
-            "count": count,
-            "mean_confidence": round(float(np.mean(class_scores)) if class_scores else 0.0, 4),
-        }
-
-    summary = {
-        "Total tracked objects": len(predictions),
-        "Predicted class counts": counts,
-        "Mean confidence": round(
-            float(np.mean([row["confidence"] for row in predictions])) if predictions else 0.0,
-            4,
-        ),
-        "Low-confidence predictions": sum(1 for row in predictions if row["confidence"] < threshold),
-    }
-
-    csv_text = "Track,Predicted class,Confidence,Status\n"
-    for row in table_rows:
-        csv_text += (
-            f"{row['Track']},{row['Predicted class']},{row['Confidence']},{row['Status']}\n"
-        )
-
-    return {
-        "table": table_rows,
-        "summary": summary,
-        "csv": csv_text.encode("utf-8-sig"),
-        "cards": cards,
-        "class_summary": class_summary,
-    }
+    downloads[2].download_button(
+        "PDF summary",
+        data=encode_pdf_report(overlay, {"metadata": metadata, "summary": summary}),
+        file_name=f"{safe_name}_cnn_report.pdf",
+        mime="application/pdf",
+    )

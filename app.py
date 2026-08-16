@@ -68,7 +68,7 @@ def _build_page_handlers():
     )
     return {
         SHARED_PIPELINE_PAGE: _shared_pipeline_page,
-        "CNN": lambda _config: render_cnn_page(),
+        "CNN": lambda config: render_cnn_page(config, context),
         "SVM": lambda _config: svm_page.render(context),
         "Decision Tree": lambda _config: decision_tree_page.render(context),
         "MLP": lambda config: mlp_page.render(
