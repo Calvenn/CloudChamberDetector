@@ -13,6 +13,12 @@ import streamlit as st
 from cloud_chamber.config import load_config
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
+from cloud_chamber.ml.member_models.decision_tree import (
+    build_visual_report as decision_tree_build_visual_report,
+    encode_report_csv as decision_tree_encode_report_csv,
+    encode_report_png as decision_tree_encode_report_png,
+    load_model as decision_tree_load_model,
+    predict_tracks as decision_tree_predict_tracks,
 from cloud_chamber.ml.member_models.extra_trees import (
     build_visual_report as build_extra_trees_visual_report,
     encode_report_csv as encode_extra_trees_report_csv,
@@ -391,7 +397,25 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
     if short_name != "MLP":
         return
 
-    st.subheader("Run the trained MLP")
+    model_key = "mlp" if short_name == "MLP" else "decision_tree"
+    state_key = f"{model_key}_predictions"
+    model_path = Path("models/mlp_classifier.joblib")
+    train_command = "python scripts/train_mlp.py"
+    model_loader = load_model
+    model_predict = predict_tracks
+    model_viz = build_visual_report
+    png_encoder = encode_report_png
+    csv_encoder = encode_report_csv
+    if short_name == "Decision Tree":
+        model_path = Path("models/decision_tree_classifier.joblib")
+        train_command = "python scripts/train_decision_tree.py"
+        model_loader = decision_tree_load_model
+        model_predict = decision_tree_predict_tracks
+        model_viz = decision_tree_build_visual_report
+        png_encoder = decision_tree_encode_report_png
+        csv_encoder = decision_tree_encode_report_csv
+
+    st.subheader(f"Run the trained {short_name}")
     result = st.session_state.get("pipeline_result")
     if result is None:
         st.warning(
@@ -399,9 +423,8 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
             "Pipeline page first."
         )
         return
-    model_path = Path("models/mlp_classifier.joblib")
     if not model_path.exists():
-        st.warning("Train the model first: `python scripts/train_mlp.py`")
+        st.warning(f"Train the model first: `{train_command}`")
         return
     model_bundle = load_model(model_path)
     confidence_threshold = st.slider(
@@ -416,113 +439,11 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
             "predicted class and trained model do not change."
         ),
     )
-    samples = st.session_state.get("input_batch") or [
-        {
-            "image": st.session_state["input_image"],
-            "name": st.session_state["input_name"],
-            "description": st.session_state["source_description"],
-        }
-    ]
-    button_label = (
-        f"Classify all {len(samples)} inputs and create reports"
-        if len(samples) > 1
-        else "Classify and create MLP report"
-    )
+    button_label = f"Classify and create {short_name} report"
     if st.button(button_label, type="primary"):
-        batch_results = {}
-        progress = st.progress(0.0, text="Processing batch...")
-        for index, sample in enumerate(samples):
-            sample_result = _process_pipeline_image(sample["image"], config)
-            sample_predictions = predict_tracks(
-                model_bundle, sample_result["features"]
-            )
-            sample_quality = assess_all_contours(
-                sample_result["features"],
-                sample_result["enhancement"].enhanced,
-                sample_result["segmentation"].binary_mask,
-                sample_result["segmentation"].parameters,
-            )
-            batch_results[sample["name"]] = {
-                "image": sample["image"],
-                "description": sample["description"],
-                "result": sample_result,
-                "predictions": sample_predictions,
-                "quality": sample_quality,
-            }
-            progress.progress(
-                (index + 1) / len(samples),
-                text=f"Processed {index + 1} of {len(samples)} inputs",
-            )
-        progress.empty()
-        st.session_state["mlp_batch_results"] = batch_results
+        st.session_state[state_key] = model_predict(model_loader(model_path), result["features"])
 
-    batch_results = st.session_state.get("mlp_batch_results", {})
-    if batch_results:
-        st.subheader("Batch classification results")
-        for index, (name, entry) in enumerate(batch_results.items(), start=1):
-            item_predictions = entry["predictions"]
-            item_quality = entry["quality"]
-            item_result = entry["result"]
-            item_summary = build_summary(
-                predictions=item_predictions,
-                quality_assessments=item_quality,
-                confidence_threshold=confidence_threshold,
-                processing_time_ms=float(
-                    item_result["segmentation"].processing_time_ms
-                )
-                + sum(
-                    float(item["inference_time_ms"])
-                    for item in item_predictions
-                ),
-            )
-            st.session_state["batch_reports"][name] = {
-                "Input": name,
-                "Source": entry["description"],
-                "Tracks": item_summary["detected_contours"],
-                "Dominant prediction": item_summary["dominant_prediction"],
-                "Confident": item_summary["confident_classifications"],
-                "Uncertain": item_summary["uncertain_classifications"],
-                "Alpha": item_summary["class_counts"]["Alpha"],
-                "Electron/Positron": item_summary["class_counts"][
-                    "Electron/Positron"
-                ],
-                "Proton": item_summary["class_counts"]["Proton"],
-                "V-track": item_summary["class_counts"]["V-track"],
-                "Contour quality": item_summary["overall_contour_quality"],
-                "Mean quality score": item_summary["mean_contour_quality"],
-                "Processing time (ms)": item_summary["processing_time_ms"],
-            }
-            with st.expander(
-                f"Image {index}: {name} — "
-                f"{item_summary['detected_contours']} detected — "
-                f"dominant: {item_summary['dominant_prediction']}",
-                expanded=False,
-            ):
-                if item_predictions:
-                    item_overlay, _ = build_visual_report(
-                        image=entry["image"],
-                        features=item_result["features"],
-                        predictions=item_predictions,
-                        confidence_threshold=confidence_threshold,
-                        quality_assessments=item_quality,
-                    )
-                    st.image(_bgr_to_rgb(item_overlay), width=700)
-                else:
-                    st.warning("No segmented track was available to classify.")
-        selected_name = st.selectbox(
-            "Choose an input for the detailed report",
-            list(batch_results),
-        )
-        selected_entry = batch_results[selected_name]
-        st.session_state["input_image"] = selected_entry["image"]
-        st.session_state["input_name"] = selected_name
-        st.session_state["source_description"] = selected_entry["description"]
-        st.session_state["pipeline_result"] = selected_entry["result"]
-        st.session_state["mlp_predictions"] = selected_entry["predictions"]
-        st.session_state["mlp_quality"] = selected_entry["quality"]
-        result = selected_entry["result"]
-
-    predictions = st.session_state.get("mlp_predictions")
+    predictions = st.session_state.get(state_key)
     if predictions is None:
         return
     if not predictions:
@@ -663,8 +584,8 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
     downloads = st.columns(3)
     downloads[0].download_button(
         "Download annotated image",
-        data=encode_report_png(overlay),
-        file_name=f"{safe_name}_mlp_report.png",
+        data=png_encoder(overlay),
+        file_name=f"{safe_name}_{model_key}_report.png",
         mime="image/png",
     )
     downloads[1].download_button(
