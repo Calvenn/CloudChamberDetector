@@ -263,6 +263,16 @@ def encode_pdf_report(
         f"({summary['mean_contour_quality']:.1f}/100)",
         f"Class counts: {summary['class_counts']}",
     ]
+    calibration = metadata.get("calibration", {})
+    if calibration.get("enabled"):
+        lines.extend(
+            [
+                "Spatial scale: "
+                f"{calibration['centimetres_per_pixel']:.6f} cm/pixel",
+                "Perspective rectification: "
+                f"{'applied' if calibration.get('perspective_rectified') else 'not applied'}",
+            ]
+        )
     y = margin + 30
     for line in lines:
         draw.text((margin, y), line, fill="black", font=font)
@@ -284,6 +294,7 @@ def encode_pdf_report(
         for item in tracks[start : start + 10]:
             prediction = item["prediction"]
             quality = item["quality"]
+            features = item.get("features", {})
             draw.text(
                 (margin, y),
                 f"T{item['track_id']}  {prediction['particle_type']}  "
@@ -295,6 +306,15 @@ def encode_pdf_report(
             y += 20
             draw.text((margin + 20, y), f"Status: {item['reporting_status']}", fill="black", font=font)
             y += 18
+            if "Length (cm)" in features:
+                draw.text(
+                    (margin + 20, y),
+                    f"Length: {features['Length (cm)']:.4f} cm  "
+                    f"Width: {features['Width (cm)']:.4f} cm",
+                    fill="black",
+                    font=font,
+                )
+                y += 18
             warning = quality["warnings"][0] if quality["warnings"] else "No major quality warning."
             draw.text((margin + 20, y), warning[:150], fill="black", font=font)
             y += 32

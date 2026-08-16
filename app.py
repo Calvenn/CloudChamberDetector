@@ -11,6 +11,11 @@ import numpy as np
 import streamlit as st
 
 from cloud_chamber.config import load_config
+from cloud_chamber.calibration import (
+    calibrate_image,
+    detect_chamber_corners,
+    rectify_image,
+)
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
 from cloud_chamber.ml.member_models.decision_tree import (
@@ -97,6 +102,7 @@ def _initialise_state() -> None:
     st.session_state.setdefault("mlp_quality", None)
     st.session_state.setdefault("batch_reports", {})
     st.session_state.setdefault("mlp_batch_results", {})
+    st.session_state.setdefault("calibration_settings", None)
 
 
 def _shared_pipeline_page(config: dict) -> None:
@@ -108,13 +114,15 @@ def _shared_pipeline_page(config: dict) -> None:
     if image is None:
         return
 
-    result = _process_pipeline_image(image, config)
+    calibration_settings = _calibration_section(image)
+    result = _process_pipeline_image(image, config, calibration_settings)
+    analysis_image = result["input_image"]
     enhancement = result["enhancement"]
     segmentation = result["segmentation"]
     features = result["features"]
     st.header("Grayscale conversion and Gaussian filtering")
     columns = st.columns(3)
-    columns[0].image(_bgr_to_rgb(image), caption="Original input")
+    columns[0].image(_bgr_to_rgb(analysis_image), caption="Calibrated input")
     columns[1].image(enhancement.grey, caption="Grayscale")
     columns[2].image(enhancement.denoised, caption="Gaussian filtered")
 
@@ -144,7 +152,7 @@ def _shared_pipeline_page(config: dict) -> None:
         st.session_state.get("input_name"), None
     )
 
-    overlay = image.copy()
+    overlay = analysis_image.copy()
     # These boxes come only from the accepted contours used to create the
     # clean mask above. Rejected and out-of-ROI contours cannot appear here.
     for x, y, width, height in segmentation.bounding_boxes:
@@ -152,16 +160,236 @@ def _shared_pipeline_page(config: dict) -> None:
     st.image(_bgr_to_rgb(overlay), caption="Detected particle-track contours")
 
     st.header("Contour-based feature extraction")
-    rows = [_feature_row(item) for item in features]
+    rows = [
+        _feature_row(item, result["centimetres_per_pixel"])
+        for item in features
+    ]
     if rows:
         st.dataframe(rows, use_container_width=True, hide_index=True)
     else:
         st.warning("No contour passed the configured minimum-area filter.")
 
 
-def _process_pipeline_image(image: np.ndarray, config: dict) -> dict:
+def _calibration_section(image: np.ndarray) -> dict | None:
+    """Collect an optional physical reference and perspective correction."""
+    st.header("Image calibration")
+    height, width = image.shape[:2]
+    controls = st.columns(2)
+    spatial_enabled = controls[0].checkbox(
+        "Enable spatial calibration",
+        value=False,
+        help=(
+            "Enable this only when a real distance in the image is known. "
+            "Without a reference, measurements correctly remain in pixels."
+        ),
+    )
+    rectify = controls[1].checkbox(
+        "Apply perspective rectification",
+        value=False,
+        help=(
+            "Correct an angled rectangular chamber. This can be used without "
+            "a physical centimetre reference."
+        ),
+    )
+    if not spatial_enabled and not rectify:
+        st.caption(
+            "Calibration and rectification are disabled; geometric "
+            "measurements use pixels."
+        )
+        st.session_state["calibration_settings"] = None
+        return None
+
+    known_length_cm = None
+    reference_points = None
+    if spatial_enabled:
+        known_length_cm = st.number_input(
+            "Known reference length (cm)",
+            min_value=0.001,
+            value=1.0,
+            step=0.1,
+            format="%.3f",
+            help="Measure a visible reference object or chamber dimension.",
+        )
+        st.caption(
+            "Enter the pixel coordinates of the two endpoints of that same "
+            "reference. Coordinates start at (0, 0) in the top-left corner."
+        )
+        reference_columns = st.columns(4)
+        x1 = reference_columns[0].number_input(
+            "Reference X1", 0, width - 1, 0, key="calibration_x1"
+        )
+        y1 = reference_columns[1].number_input(
+            "Reference Y1", 0, height - 1, 0, key="calibration_y1"
+        )
+        x2 = reference_columns[2].number_input(
+            "Reference X2", 0, width - 1, width - 1, key="calibration_x2"
+        )
+        y2 = reference_columns[3].number_input(
+            "Reference Y2", 0, height - 1, 0, key="calibration_y2"
+        )
+        reference_points = [
+            (float(x1), float(y1)),
+            (float(x2), float(y2)),
+        ]
+
+    rectification_points = None
+    if rectify:
+        detected_corners = detect_chamber_corners(image)
+        source_key = f"{st.session_state.get('input_name')}:{width}x{height}"
+        coordinate_keys = [
+            (f"rectification_x_{index}", f"rectification_y_{index}")
+            for index in range(4)
+        ]
+        newly_enabled = not st.session_state.get(
+            "rectification_was_enabled", False
+        )
+        if (
+            st.session_state.get("calibration_corner_source") != source_key
+            or newly_enabled
+        ):
+            st.session_state["calibration_corner_source"] = source_key
+            for point, (x_key, y_key) in zip(
+                detected_corners, coordinate_keys
+            ):
+                st.session_state[x_key] = int(round(float(point[0])))
+                st.session_state[y_key] = int(round(float(point[1])))
+        st.session_state["rectification_was_enabled"] = True
+
+        if st.button("Reset coordinates to automatic values"):
+            for point, (x_key, y_key) in zip(
+                detected_corners, coordinate_keys
+            ):
+                st.session_state[x_key] = int(round(float(point[0])))
+                st.session_state[y_key] = int(round(float(point[1])))
+
+        names = ("Top-left", "Top-right", "Bottom-right", "Bottom-left")
+        points = []
+        with st.expander("Rectification corner coordinates", expanded=True):
+            st.caption(
+                "Values are filled automatically. Adjust them if the preview "
+                "does not follow the real chamber boundary."
+            )
+            for index, (name, (x_key, y_key)) in enumerate(
+                zip(names, coordinate_keys)
+            ):
+                columns = st.columns(2)
+                point_x = columns[0].number_input(
+                    f"{name} X",
+                    min_value=0,
+                    max_value=width - 1,
+                    step=1,
+                    key=x_key,
+                )
+                point_y = columns[1].number_input(
+                    f"{name} Y",
+                    min_value=0,
+                    max_value=height - 1,
+                    step=1,
+                    key=y_key,
+                )
+                points.append((float(point_x), float(point_y)))
+        rectification_points = points
+
+        adjusted_corners = np.asarray(points, dtype=np.int32)
+        corner_preview = image.copy()
+        for index, (point, short_name) in enumerate(
+            zip(adjusted_corners, ("TL", "TR", "BR", "BL"))
+        ):
+            x, y = int(point[0]), int(point[1])
+            next_point = adjusted_corners[(index + 1) % 4]
+            cv2.line(
+                corner_preview,
+                (x, y),
+                (int(next_point[0]), int(next_point[1])),
+                (0, 255, 255),
+                3,
+            )
+            cv2.circle(corner_preview, (x, y), 10, (0, 255, 255), -1)
+            cv2.putText(
+                corner_preview,
+                short_name,
+                (x + 12, max(y - 12, 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        st.image(
+            _bgr_to_rgb(corner_preview),
+            caption="Editable chamber boundary used for rectification",
+        )
+    else:
+        # The next transition from disabled to enabled must start from a fresh
+        # automatic estimate rather than values edited during an earlier run.
+        st.session_state["rectification_was_enabled"] = False
+
+    settings = {
+        "spatial_enabled": spatial_enabled,
+        "known_length_cm": (
+            float(known_length_cm) if known_length_cm is not None else None
+        ),
+        "reference_points": reference_points,
+        "rectification_points": rectification_points,
+    }
+    try:
+        if spatial_enabled:
+            preview = calibrate_image(
+                image,
+                settings["known_length_cm"],
+                settings["reference_points"],
+                settings["rectification_points"],
+            )
+            preview_image = preview.image
+            st.metric(
+                "Spatial scale",
+                f"{preview.centimetres_per_pixel:.6f} cm/pixel",
+            )
+        else:
+            preview_image = rectify_image(image, rectification_points)
+    except ValueError as error:
+        st.error(str(error))
+        st.stop()
+    if rectify:
+        st.image(
+            _bgr_to_rgb(preview_image), caption="Perspective-rectified image"
+        )
+        if not spatial_enabled:
+            st.caption(
+                "Perspective was corrected, but measurements remain in pixels "
+                "because no physical reference was supplied."
+            )
+    st.session_state["calibration_settings"] = settings
+    return settings
+
+
+def _process_pipeline_image(
+    image: np.ndarray,
+    config: dict,
+    calibration_settings: dict | None = None,
+) -> dict:
     """Run the identical shared pipeline for one image without drawing UI."""
-    profile_name = _detect_layout_profile(image)
+    analysis_image = image
+    centimetres_per_pixel = None
+    rectified = False
+    if calibration_settings:
+        if calibration_settings.get("spatial_enabled"):
+            calibration = calibrate_image(
+                image,
+                calibration_settings["known_length_cm"],
+                calibration_settings["reference_points"],
+                calibration_settings.get("rectification_points"),
+            )
+            analysis_image = calibration.image
+            centimetres_per_pixel = calibration.centimetres_per_pixel
+            rectified = calibration.rectified
+        elif calibration_settings.get("rectification_points") is not None:
+            analysis_image = rectify_image(
+                image, calibration_settings["rectification_points"]
+            )
+            rectified = True
+
+    profile_name = _detect_layout_profile(analysis_image)
     selected_profile = config["segmentation"]["roi_profiles"][profile_name]
     roi_margins = {
         side: selected_profile[side]
@@ -175,7 +403,7 @@ def _process_pipeline_image(image: np.ndarray, config: dict) -> dict:
             if name not in roi_margins
         },
     }
-    enhancement = enhance_image(image, config["enhancement"])
+    enhancement = enhance_image(analysis_image, config["enhancement"])
     segmentation = segment_tracks(
         enhancement.enhanced,
         segmentation_settings,
@@ -193,10 +421,13 @@ def _process_pipeline_image(image: np.ndarray, config: dict) -> dict:
         minimum_area=feature_minimum_area,
     )
     return {
+        "input_image": analysis_image,
         "enhancement": enhancement,
         "segmentation": segmentation,
         "features": features,
         "roi_profile": profile_name,
+        "centimetres_per_pixel": centimetres_per_pixel,
+        "rectified": rectified,
     }
 
 
@@ -617,9 +848,105 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
     )
     button_label = f"Classify and create {short_name} report"
     if st.button(button_label, type="primary"):
-        st.session_state[state_key] = model_predict(model_loader(model_path), result["features"])
+        batch_results = {}
+        progress = st.progress(0.0, text="Processing batch...")
+        for index, sample in enumerate(samples):
+            sample_result = _process_pipeline_image(
+                sample["image"],
+                config,
+                st.session_state.get("calibration_settings"),
+            )
+            sample_predictions = predict_tracks(
+                model_bundle, sample_result["features"]
+            )
+            sample_quality = assess_all_contours(
+                sample_result["features"],
+                sample_result["enhancement"].enhanced,
+                sample_result["segmentation"].binary_mask,
+                sample_result["segmentation"].parameters,
+            )
+            batch_results[sample["name"]] = {
+                "image": sample["image"],
+                "analysis_image": sample_result["input_image"],
+                "description": sample["description"],
+                "result": sample_result,
+                "predictions": sample_predictions,
+                "quality": sample_quality,
+            }
+            progress.progress(
+                (index + 1) / len(samples),
+                text=f"Processed {index + 1} of {len(samples)} inputs",
+            )
+        progress.empty()
+        st.session_state["mlp_batch_results"] = batch_results
 
-    predictions = st.session_state.get(state_key)
+    batch_results = st.session_state.get("mlp_batch_results", {})
+    if batch_results:
+        st.subheader("Batch classification results")
+        for index, (name, entry) in enumerate(batch_results.items(), start=1):
+            item_predictions = entry["predictions"]
+            item_quality = entry["quality"]
+            item_result = entry["result"]
+            item_summary = build_summary(
+                predictions=item_predictions,
+                quality_assessments=item_quality,
+                confidence_threshold=confidence_threshold,
+                processing_time_ms=float(
+                    item_result["segmentation"].processing_time_ms
+                )
+                + sum(
+                    float(item["inference_time_ms"])
+                    for item in item_predictions
+                ),
+            )
+            st.session_state["batch_reports"][name] = {
+                "Input": name,
+                "Source": entry["description"],
+                "Tracks": item_summary["detected_contours"],
+                "Dominant prediction": item_summary["dominant_prediction"],
+                "Confident": item_summary["confident_classifications"],
+                "Uncertain": item_summary["uncertain_classifications"],
+                "Alpha": item_summary["class_counts"]["Alpha"],
+                "Electron/Positron": item_summary["class_counts"][
+                    "Electron/Positron"
+                ],
+                "Proton": item_summary["class_counts"]["Proton"],
+                "V-track": item_summary["class_counts"]["V-track"],
+                "Contour quality": item_summary["overall_contour_quality"],
+                "Mean quality score": item_summary["mean_contour_quality"],
+                "Processing time (ms)": item_summary["processing_time_ms"],
+            }
+            with st.expander(
+                f"Image {index}: {name} — "
+                f"{item_summary['detected_contours']} detected — "
+                f"dominant: {item_summary['dominant_prediction']}",
+                expanded=False,
+            ):
+                if item_predictions:
+                    item_overlay, _ = build_visual_report(
+                        image=entry["analysis_image"],
+                        features=item_result["features"],
+                        predictions=item_predictions,
+                        confidence_threshold=confidence_threshold,
+                        quality_assessments=item_quality,
+                    )
+                    st.image(_bgr_to_rgb(item_overlay), width=700)
+                else:
+                    st.warning("No segmented track was available to classify.")
+        selected_name = st.selectbox(
+            "Choose an input for the detailed report",
+            list(batch_results),
+        )
+        selected_entry = batch_results[selected_name]
+        st.session_state["input_image"] = selected_entry["image"]
+        st.session_state["input_name"] = selected_name
+        st.session_state["source_description"] = selected_entry["description"]
+        st.session_state["pipeline_result"] = selected_entry["result"]
+        st.session_state["mlp_predictions"] = selected_entry["predictions"]
+        st.session_state["mlp_quality"] = selected_entry["quality"]
+        result = selected_entry["result"]
+
+    predictions = st.session_state.get("mlp_predictions")
     if predictions is None:
         return
     if not predictions:
@@ -636,20 +963,35 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
         st.session_state["mlp_quality"] = quality_assessments
 
     overlay, report_rows = build_visual_report(
-        image=st.session_state["input_image"],
+        image=result["input_image"],
         features=result["features"],
         predictions=predictions,
         confidence_threshold=confidence_threshold,
         quality_assessments=quality_assessments,
     )
-    for row, prediction, quality in zip(
-        report_rows, predictions, quality_assessments, strict=True
+    for row, track, prediction, quality in zip(
+        report_rows,
+        result["features"],
+        predictions,
+        quality_assessments,
+        strict=True,
     ):
         row["Reporting decision"] = reporting_status(
             confidence=float(prediction["confidence"]),
             confidence_threshold=confidence_threshold,
             quality_score=int(quality["score"]),
         )
+        if result["centimetres_per_pixel"] is not None:
+            calibrated = _feature_row(
+                track, result["centimetres_per_pixel"]
+            )
+            row.update(
+                {
+                    name: value
+                    for name, value in calibrated.items()
+                    if name.endswith("(cm)") or name.endswith("(cm²)")
+                }
+            )
 
     processing_time_ms = float(result["segmentation"].processing_time_ms) + sum(
         float(item["inference_time_ms"]) for item in predictions
@@ -672,6 +1014,11 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
     metadata["model_version"] = (
         f"{model_path.stat().st_size}-{model_path.stat().st_mtime_ns}"
     )
+    metadata["calibration"] = {
+        "enabled": result["centimetres_per_pixel"] is not None,
+        "centimetres_per_pixel": result["centimetres_per_pixel"],
+        "perspective_rectified": result["rectified"],
+    }
     track_reports = []
     for track, prediction, quality in zip(
         result["features"], predictions, quality_assessments, strict=True
@@ -686,7 +1033,9 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
                     confidence_threshold=confidence_threshold,
                     quality_score=int(quality["score"]),
                 ),
-                "features": _feature_row(track),
+                "features": _feature_row(
+                    track, result["centimetres_per_pixel"]
+                ),
             }
         )
     complete_report = {
@@ -735,6 +1084,7 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
         predictions,
         quality_assessments,
         confidence_threshold,
+        result["centimetres_per_pixel"],
     )
 
     batch_row = {
@@ -784,6 +1134,7 @@ def _render_particle_evidence(
     predictions: list[dict],
     quality_assessments: list[dict],
     confidence_threshold: float,
+    centimetres_per_pixel: float | None,
 ) -> None:
     st.subheader("Particle evidence cards")
     items_per_page = 10
@@ -846,7 +1197,9 @@ def _render_particle_evidence(
                 f"**Local contrast:** {quality['local_contrast']:.1f}"
             )
             details[1].dataframe(
-                [_feature_row(track)], use_container_width=True, hide_index=True
+                [_feature_row(track, centimetres_per_pixel)],
+                use_container_width=True,
+                hide_index=True,
             )
             for item in quality["warnings"]:
                 st.warning(item)
@@ -1176,9 +1529,7 @@ is selected.
         "pipeline_result"
     )
 
-    image = st.session_state.get(
-        "input_image"
-    )
+    image = result.get("input_image") if result is not None else None
 
 
     if result is None or image is None:
@@ -1722,8 +2073,8 @@ def _comparison_page() -> None:
     )
 
 
-def _feature_row(item) -> dict:
-    return {
+def _feature_row(item, centimetres_per_pixel: float | None = None) -> dict:
+    row = {
         "Track": item.track_id,
         "Area (pxÂ²)": round(item.area_pixels, 3),
         "Perimeter (px)": round(item.perimeter_pixels, 3),
@@ -1736,6 +2087,18 @@ def _feature_row(item) -> dict:
         "Orientation (Â°)": round(item.orientation_degrees, 3),
         "Mean intensity": round(item.mean_intensity, 3),
     }
+    if centimetres_per_pixel is not None:
+        scale = float(centimetres_per_pixel)
+        row.update(
+            {
+                "Area (cm²)": round(item.area_pixels * scale * scale, 6),
+                "Perimeter (cm)": round(item.perimeter_pixels * scale, 6),
+                "Length (cm)": round(item.major_axis_pixels * scale, 6),
+                "Width (cm)": round(item.mean_width_pixels * scale, 6),
+                "Thickness (cm)": round(item.thickness_pixels * scale, 6),
+            }
+        )
+    return row
 
 
 def _set_input(image: np.ndarray, name: str, description: str) -> None:
