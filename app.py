@@ -13,6 +13,13 @@ import streamlit as st
 from cloud_chamber.config import load_config
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
+from cloud_chamber.ml.member_models.decision_tree import (
+    build_visual_report as decision_tree_build_visual_report,
+    encode_report_csv as decision_tree_encode_report_csv,
+    encode_report_png as decision_tree_encode_report_png,
+    load_model as decision_tree_load_model,
+    predict_tracks as decision_tree_predict_tracks,
+)
 from cloud_chamber.ml.member_models.mlp import (
     build_visual_report,
     encode_report_csv,
@@ -341,10 +348,28 @@ def _model_page(short_name: str, full_name: str) -> None:
         connects their completed classifier.
         """
     )
-    if short_name != "MLP":
+    if short_name not in {"MLP", "Decision Tree"}:
         return
 
-    st.subheader("Run the trained MLP")
+    model_key = "mlp" if short_name == "MLP" else "decision_tree"
+    state_key = f"{model_key}_predictions"
+    model_path = Path("models/mlp_classifier.joblib")
+    train_command = "python scripts/train_mlp.py"
+    model_loader = load_model
+    model_predict = predict_tracks
+    model_viz = build_visual_report
+    png_encoder = encode_report_png
+    csv_encoder = encode_report_csv
+    if short_name == "Decision Tree":
+        model_path = Path("models/decision_tree_classifier.joblib")
+        train_command = "python scripts/train_decision_tree.py"
+        model_loader = decision_tree_load_model
+        model_predict = decision_tree_predict_tracks
+        model_viz = decision_tree_build_visual_report
+        png_encoder = decision_tree_encode_report_png
+        csv_encoder = decision_tree_encode_report_csv
+
+    st.subheader(f"Run the trained {short_name}")
     result = st.session_state.get("pipeline_result")
     if result is None:
         st.warning(
@@ -352,9 +377,8 @@ def _model_page(short_name: str, full_name: str) -> None:
             "Pipeline page first."
         )
         return
-    model_path = Path("models/mlp_classifier.joblib")
     if not model_path.exists():
-        st.warning("Train the model first: `python scripts/train_mlp.py`")
+        st.warning(f"Train the model first: `{train_command}`")
         return
     confidence_threshold = st.slider(
         "Reporting confidence threshold",
@@ -367,19 +391,18 @@ def _model_page(short_name: str, full_name: str) -> None:
             "Uncertain. This threshold does not retrain the model."
         ),
     )
-    if st.button("Classify and create MLP report", type="primary"):
-        st.session_state["mlp_predictions"] = predict_tracks(
-            load_model(model_path), result["features"]
-        )
+    button_label = f"Classify and create {short_name} report"
+    if st.button(button_label, type="primary"):
+        st.session_state[state_key] = model_predict(model_loader(model_path), result["features"])
 
-    predictions = st.session_state.get("mlp_predictions")
+    predictions = st.session_state.get(state_key)
     if predictions is None:
         return
     if not predictions:
         st.warning("No segmented track is available for classification.")
         return
 
-    overlay, report_rows = build_visual_report(
+    overlay, report_rows = model_viz(
         st.session_state["input_image"],
         result["features"],
         predictions,
@@ -389,7 +412,7 @@ def _model_page(short_name: str, full_name: str) -> None:
     st.image(
         _bgr_to_rgb(overlay),
         caption=(
-            "MLP particle predictions. Yellow annotations are below the "
+            f"{short_name} particle predictions. Yellow annotations are below the "
             "selected confidence threshold."
         ),
     )
@@ -403,14 +426,14 @@ def _model_page(short_name: str, full_name: str) -> None:
     downloads = st.columns(2)
     downloads[0].download_button(
         "Download annotated image",
-        data=encode_report_png(overlay),
-        file_name=f"{safe_name}_mlp_report.png",
+        data=png_encoder(overlay),
+        file_name=f"{safe_name}_{model_key}_report.png",
         mime="image/png",
     )
     downloads[1].download_button(
         "Download classification CSV",
-        data=encode_report_csv(report_rows),
-        file_name=f"{safe_name}_mlp_report.csv",
+        data=csv_encoder(report_rows),
+        file_name=f"{safe_name}_{model_key}_report.csv",
         mime="text/csv",
     )
 
