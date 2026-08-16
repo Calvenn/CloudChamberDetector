@@ -8,14 +8,16 @@ splits so their results can be compared fairly.
 
 1. Acquire one image, a batch of images, or sampled frames from an
    MP4/AVI/MOV video.
-2. Convert BGR/RGB to grayscale.
-3. Apply Gaussian filtering.
-4. Apply Otsu binary thresholding.
-5. Refine the mask using morphological opening and closing.
-6. Detect external contours.
-7. Extract area, perimeter, length, width, aspect ratio, solidity,
+2. Optionally calibrate the image using a known physical reference and apply
+   four-corner perspective rectification when the chamber is viewed at an angle.
+3. Convert BGR/RGB to grayscale.
+4. Apply Gaussian filtering.
+5. Apply Otsu binary thresholding.
+6. Refine the mask using morphological opening and closing.
+7. Detect external contours.
+8. Extract area, perimeter, length, width, aspect ratio, solidity,
    rectangularity, thickness, orientation and mean intensity.
-8. Classify the common features using CNN, SVM, Decision Tree, MLP or
+9. Classify the common features using CNN, SVM, Decision Tree, MLP or
    Extremely Randomised Trees (Extra Trees).
 
 CLAHE, background subtraction, edge detection, Hough transforms, watershed
@@ -31,6 +33,24 @@ python -m streamlit run app.py
 ```
 
 Do not run `python app.py`; Streamlit requires its own runner.
+
+### Image calibration
+
+Spatial scaling is optional because a physical scale cannot be recovered from
+an ordinary image without a known reference. Perspective rectification is an
+independent control and can be enabled while measurements remain in pixels.
+To obtain physical units, enable **spatial calibration**, enter a real reference length in
+centimetres and the pixel coordinates of its two endpoints. The calculated
+`cm/pixel` scale adds physical length, width, perimeter, thickness and area to
+the feature tables and reports.
+
+If the camera views the rectangular chamber at an angle, enable perspective
+rectification. The application automatically fills editable top-left,
+top-right, bottom-right and bottom-left coordinates and shows their boundary
+on the image; correct the values if the preview does not follow the chamber.
+The reference endpoints are transformed through the same homography before the
+final scale is calculated. Do not enable calibration or claim centimetre
+measurements when no reliable physical reference is visible.
 
 On **Shared Processing Pipeline**, choose **Image** to upload several image
 files together and press **Load image batch**. Choose **Video** to preview one
@@ -81,6 +101,7 @@ python -m cloud_chamber.cli analyse "path\to\image.jpg"
 | `config.yaml` | Fixed Gaussian, threshold/morphology and dataset settings. |
 | `cloud_chamber/acquisition.py` | Image loading, video discovery and frame extraction. |
 | `cloud_chamber/enhancement.py` | Grayscale conversion followed by Gaussian filtering only. |
+| `cloud_chamber/calibration.py` | Known-reference spatial scaling and optional perspective rectification. |
 | `cloud_chamber/segmentation.py` | Otsu thresholding, opening, closing and contour detection. |
 | `cloud_chamber/features.py` | Common contour-based feature extraction. |
 | `cloud_chamber/pipeline.py` | Integrates all shared processing stages. |
