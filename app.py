@@ -21,6 +21,7 @@ from cloud_chamber.ml.member_models.mlp import (
     predict_tracks,
 )
 from cloud_chamber.segmentation import segment_tracks
+from ui.cnn_page import render_cnn_page
 
 
 MODEL_PAGES = {
@@ -63,9 +64,12 @@ def main() -> None:
 def _initialise_state() -> None:
     st.session_state.setdefault("input_image", None)
     st.session_state.setdefault("input_name", None)
+    st.session_state.setdefault("input_images", [])
+    st.session_state.setdefault("selected_input_index", 0)
     st.session_state.setdefault("source_description", None)
     st.session_state.setdefault("pipeline_result", None)
     st.session_state.setdefault("mlp_predictions", None)
+    st.session_state.setdefault("cnn_predictions", None)
     st.session_state.setdefault(
         "layout_choice", "Auto-detect from image shape (recommended)"
     )
@@ -271,14 +275,31 @@ def _shared_pipeline_page(config: dict) -> None:
 def _acquisition_section() -> None:
     source_type = st.radio("Input type", ["Image", "Video"], horizontal=True)
     if source_type == "Image":
-        upload = st.file_uploader(
-            "Upload a raw cloud-chamber image",
+        uploads = st.file_uploader(
+            "Upload one or more raw cloud-chamber images",
             type=["jpg", "jpeg", "png", "tif", "tiff"],
+            accept_multiple_files=True,
         )
-        if upload is not None:
-            image = _decode_uploaded_image(upload.getvalue())
-            _set_input(image, upload.name, "Uploaded image")
-            st.success("Image loaded.")
+        if uploads:
+            loaded = []
+            for upload in uploads:
+                image = _decode_uploaded_image(upload.getvalue())
+                loaded.append((image, upload.name))
+            st.session_state["input_images"] = loaded
+            st.session_state["selected_input_index"] = 0
+            if loaded:
+                image, name = loaded[0]
+                _set_input(image, name, "Uploaded image")
+            st.success(f"Loaded {len(loaded)} image(s). Choose one from the selector below.")
+
+        if st.session_state["input_images"]:
+            names = [name for _, name in st.session_state["input_images"]]
+            selected = st.selectbox("Select image for analysis", names)
+            index = names.index(selected)
+            if index != st.session_state["selected_input_index"]:
+                st.session_state["selected_input_index"] = index
+            image, name = st.session_state["input_images"][index]
+            _set_input(image, name, "Uploaded image")
         return
 
     upload = st.file_uploader(
@@ -327,6 +348,10 @@ def _model_page(short_name: str, full_name: str) -> None:
         f"Purpose: team-member workspace for the {full_name}. This model must "
         "use the shared dataset splits and shared processing pipeline."
     )
+    if short_name == "CNN":
+        render_cnn_page()
+        return
+
     module_name = short_name.lower().replace(" ", "_")
     if short_name == "Extra Trees":
         module_name = "extra_trees"
