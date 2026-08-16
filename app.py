@@ -1,4 +1,4 @@
-﻿"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
+"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
 
 from __future__ import annotations
 
@@ -18,6 +18,12 @@ from cloud_chamber.calibration import (
 )
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
+from cloud_chamber.ml.member_models.decision_tree import (
+    build_visual_report as decision_tree_build_visual_report,
+    encode_report_csv as decision_tree_encode_report_csv,
+    encode_report_png as decision_tree_encode_report_png,
+    load_model as decision_tree_load_model,
+    predict_tracks as decision_tree_predict_tracks,
 from cloud_chamber.ml.member_models.extra_trees import (
     build_visual_report as build_extra_trees_visual_report,
     encode_report_csv as encode_extra_trees_report_csv,
@@ -42,6 +48,9 @@ from cloud_chamber.reporting import (
     reporting_status,
 )
 from cloud_chamber.segmentation import segment_tracks
+import cloud_chamber.ml.member_models.svm as svm_module
+from time import perf_counter
+
 
 
 MODEL_PAGES = {
@@ -85,6 +94,7 @@ def _initialise_state() -> None:
     st.session_state.setdefault("source_description", None)
     st.session_state.setdefault("pipeline_result", None)
     st.session_state.setdefault("mlp_predictions", None)
+    st.session_state.setdefault("svm_predictions", None)
     st.session_state.setdefault("extra_trees_predictions", None)
     st.session_state.setdefault(
         "layout_choice", "Auto-detect from image shape (recommended)"
@@ -572,6 +582,178 @@ def _batch_selector() -> None:
         index=default_index,
         format_func=lambda index: f"Image {index + 1}: {names[index]}",
     )
+    module_name = short_name.lower().replace(" ", "_")
+    if short_name == "Extra Trees":
+        module_name = "extra_trees"
+
+    if short_name not in ("MLP", "SVM"):
+        st.code(f"cloud_chamber/ml/member_models/{module_name}.py")
+        st.markdown(
+            """
+            The member implementation should provide training, validation,
+            prediction and model-saving functions. Do not duplicate or alter the
+            shared enhancement, segmentation or feature extraction stages.
+
+            This page is intentionally a placeholder until the assigned member
+            connects their completed classifier.
+            """
+        )
+        return
+
+    if short_name == "MLP":
+        st.subheader("Run the trained MLP")
+        result = st.session_state.get("pipeline_result")
+        if result is None:
+            st.warning(
+                "Process an image or video frame on the Shared Processing "
+                "Pipeline page first."
+            )
+            return
+        model_path = Path("models/mlp_classifier.joblib")
+        if not model_path.exists():
+            st.warning("Train the model first: `python scripts/train_mlp.py`")
+            return
+        confidence_threshold = st.slider(
+            "Reporting confidence threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.60,
+            step=0.05,
+            help=(
+                "Predictions below this probability remain visible but are marked "
+                "Uncertain. This threshold does not retrain the model."
+            ),
+        )
+        if st.button("Classify and create MLP report", type="primary"):
+            st.session_state["mlp_predictions"] = predict_tracks(
+                load_model(model_path), result["features"]
+            )
+
+        predictions = st.session_state.get("mlp_predictions")
+        if predictions is None:
+            return
+        if not predictions:
+            st.warning("No segmented track is available for classification.")
+            return
+
+        overlay, report_rows = build_visual_report(
+            st.session_state["input_image"],
+            result["features"],
+            predictions,
+            confidence_threshold,
+        )
+        st.subheader("Particle classification report")
+        st.image(
+            _bgr_to_rgb(overlay),
+            caption=(
+                "MLP particle predictions. Yellow annotations are below the "
+                "selected confidence threshold."
+            ),
+        )
+        st.dataframe(report_rows, use_container_width=True, hide_index=True)
+        st.caption(
+            "The label is the model's most likely class for each segmented "
+            "contour. It is a prediction, not direct physical confirmation."
+        )
+
+        safe_name = Path(st.session_state["input_name"]).stem
+        downloads = st.columns(2)
+        downloads[0].download_button(
+            "Download annotated image",
+            data=encode_report_png(overlay),
+            file_name=f"{safe_name}_mlp_report.png",
+            mime="image/png",
+        )
+        downloads[1].download_button(
+            "Download classification CSV",
+            data=encode_report_csv(report_rows),
+            file_name=f"{safe_name}_mlp_report.csv",
+            mime="text/csv",
+        )
+
+    elif short_name == "SVM":
+        st.subheader("Step 2: Configure SVM")
+        result = st.session_state.get("pipeline_result")
+        if result is None:
+            st.warning(
+                "Process an image or video frame on the Shared Processing "
+                "Pipeline page first."
+            )
+            return
+        model_path = Path("models/svm_classifier.joblib")
+        if not model_path.exists():
+            st.warning("Train the model first: `python scripts/train_svm.py`")
+            return
+
+        # Load SVM model bundle
+        model_bundle = svm_module.load_model(model_path)
+
+        # Advanced Settings collapsible section
+        with st.expander("Advanced Settings", expanded=False):
+            use_probability = st.checkbox(
+                "Use probability estimates",
+                value=True,
+                help="If checked, uses SVC's probability estimates to output classification confidence and apply the decision threshold.",
+            )
+            decision_threshold = st.slider(
+                "Decision threshold",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.50,
+                step=0.05,
+                disabled=not use_probability,
+                help=(
+                    "Predictions below this probability remain visible but are marked "
+                    "Uncertain. This threshold is only applied when using probability estimates."
+                ),
+            )
+
+        if st.button("Classify and create SVM report", type="primary"):
+            st.session_state["svm_predictions"] = _predict_tracks_svm(
+                model_bundle, result["features"], use_probability
+            )
+
+        predictions = st.session_state.get("svm_predictions")
+        if predictions is None:
+            return
+        if not predictions:
+            st.warning("No segmented track is available for classification.")
+            return
+
+        overlay, report_rows = svm_module.build_visual_report(
+            st.session_state["input_image"],
+            result["features"],
+            predictions,
+            decision_threshold if use_probability else 0.0,
+        )
+        st.subheader("SVM Particle classification report")
+        st.image(
+            _bgr_to_rgb(overlay),
+            caption=(
+                "SVM particle predictions. Yellow annotations are below the "
+                "selected decision threshold."
+            ),
+        )
+        st.dataframe(report_rows, use_container_width=True, hide_index=True)
+        st.caption(
+            "The label is the model's most likely class for each segmented "
+            "contour. It is a prediction, not direct physical confirmation."
+        )
+
+        safe_name = Path(st.session_state["input_name"]).stem
+        downloads = st.columns(2)
+        downloads[0].download_button(
+            "Download annotated image",
+            data=svm_module.encode_report_png(overlay),
+            file_name=f"{safe_name}_svm_report.png",
+            mime="image/png",
+        )
+        downloads[1].download_button(
+            "Download classification CSV",
+            data=svm_module.encode_report_csv(report_rows),
+            file_name=f"{safe_name}_svm_report.csv",
+            mime="text/csv",
+        )
     selected = samples[selected_index]
     if selected["name"] != current_name:
         _set_input(
@@ -622,7 +804,25 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
     if short_name != "MLP":
         return
 
-    st.subheader("Run the trained MLP")
+    model_key = "mlp" if short_name == "MLP" else "decision_tree"
+    state_key = f"{model_key}_predictions"
+    model_path = Path("models/mlp_classifier.joblib")
+    train_command = "python scripts/train_mlp.py"
+    model_loader = load_model
+    model_predict = predict_tracks
+    model_viz = build_visual_report
+    png_encoder = encode_report_png
+    csv_encoder = encode_report_csv
+    if short_name == "Decision Tree":
+        model_path = Path("models/decision_tree_classifier.joblib")
+        train_command = "python scripts/train_decision_tree.py"
+        model_loader = decision_tree_load_model
+        model_predict = decision_tree_predict_tracks
+        model_viz = decision_tree_build_visual_report
+        png_encoder = decision_tree_encode_report_png
+        csv_encoder = decision_tree_encode_report_csv
+
+    st.subheader(f"Run the trained {short_name}")
     result = st.session_state.get("pipeline_result")
     if result is None:
         st.warning(
@@ -630,9 +830,8 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
             "Pipeline page first."
         )
         return
-    model_path = Path("models/mlp_classifier.joblib")
     if not model_path.exists():
-        st.warning("Train the model first: `python scripts/train_mlp.py`")
+        st.warning(f"Train the model first: `{train_command}`")
         return
     model_bundle = load_model(model_path)
     confidence_threshold = st.slider(
@@ -647,18 +846,7 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
             "predicted class and trained model do not change."
         ),
     )
-    samples = st.session_state.get("input_batch") or [
-        {
-            "image": st.session_state["input_image"],
-            "name": st.session_state["input_name"],
-            "description": st.session_state["source_description"],
-        }
-    ]
-    button_label = (
-        f"Classify all {len(samples)} inputs and create reports"
-        if len(samples) > 1
-        else "Classify and create MLP report"
-    )
+    button_label = f"Classify and create {short_name} report"
     if st.button(button_label, type="primary"):
         batch_results = {}
         progress = st.progress(0.0, text="Processing batch...")
@@ -922,8 +1110,8 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
     downloads = st.columns(3)
     downloads[0].download_button(
         "Download annotated image",
-        data=encode_report_png(overlay),
-        file_name=f"{safe_name}_mlp_report.png",
+        data=png_encoder(overlay),
+        file_name=f"{safe_name}_{model_key}_report.png",
         mime="image/png",
     )
     downloads[1].download_button(
@@ -1919,8 +2107,63 @@ def _set_input(image: np.ndarray, name: str, description: str) -> None:
     st.session_state["source_description"] = description
     st.session_state["pipeline_result"] = None
     st.session_state["mlp_predictions"] = None
-    st.session_state["extra_trees_predictions"] = None
-    st.session_state["mlp_quality"] = None
+    st.session_state["svm_predictions"] = None
+
+
+def _predict_tracks_svm(
+    model_bundle: dict,
+    features: list,
+    use_probability: bool,
+) -> list[dict]:
+    matrix = svm_module.features_to_matrix(features)
+    if matrix.shape[0] == 0:
+        return []
+
+    model = model_bundle["model"]
+    started = perf_counter()
+
+    if use_probability:
+        probabilities = model.predict_proba(matrix)
+        predictions = model.classes_[np.argmax(probabilities, axis=1)]
+        elapsed_per_track = (perf_counter() - started) * 1000.0 / len(matrix)
+        return [
+            {
+                "track_id": track.track_id,
+                "predicted_class": str(label),
+                "particle_type": svm_module.DISPLAY_NAMES.get(str(label), str(label)),
+                "confidence": float(np.max(probability)),
+                "inference_time_ms": elapsed_per_track,
+                "probabilities": {
+                    str(class_name): float(class_probability)
+                    for class_name, class_probability in zip(
+                        model.classes_, probability, strict=True
+                    )
+                },
+            }
+            for track, label, probability in zip(
+                features, predictions, probabilities, strict=True
+            )
+        ]
+    else:
+        predictions = model.predict(matrix)
+        elapsed_per_track = (perf_counter() - started) * 1000.0 / len(matrix)
+        return [
+            {
+                "track_id": track.track_id,
+                "predicted_class": str(label),
+                "particle_type": svm_module.DISPLAY_NAMES.get(str(label), str(label)),
+                "confidence": 1.0,
+                "inference_time_ms": elapsed_per_track,
+                "probabilities": {
+                    str(class_name): 1.0 if str(class_name) == str(label) else 0.0
+                    for class_name in model.classes_
+                },
+            }
+            for track, label in zip(
+                features, predictions, strict=True
+            )
+        ]
+
 
 
 def _detect_layout_profile(image: np.ndarray) -> str:

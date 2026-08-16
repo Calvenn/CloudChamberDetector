@@ -36,6 +36,27 @@ def decode_uncompressed_rle(segmentation: dict) -> np.ndarray:
     return np.ascontiguousarray(flat.reshape((height, width), order="F"))
 
 
+def annotation_to_mask(annotation: dict, image_shape: tuple[int, int]) -> np.ndarray:
+    """Decode an instance mask or fall back to its COCO bounding box."""
+    segmentation = annotation.get("segmentation")
+    if segmentation is not None:
+        return decode_uncompressed_rle(segmentation)
+
+    if "bbox" not in annotation:
+        raise KeyError(f"Annotation has neither segmentation nor bbox: {annotation}")
+
+    x, y, width, height = [float(value) for value in annotation["bbox"]]
+    mask = np.zeros(image_shape[:2], dtype=np.uint8)
+    x0 = int(np.clip(np.round(x), 0, image_shape[1] - 1))
+    y0 = int(np.clip(np.round(y), 0, image_shape[0] - 1))
+    x1 = int(np.clip(np.round(x + width), 0, image_shape[1]))
+    y1 = int(np.clip(np.round(y + height), 0, image_shape[0]))
+    if x1 <= x0 or y1 <= y0:
+        return mask
+    cv2.rectangle(mask, (x0, y0), (x1 - 1, y1 - 1), 255, thickness=-1)
+    return mask
+
+
 def build_feature_csv(
     annotation_path: str | Path,
     output_path: str | Path,
@@ -62,7 +83,7 @@ def build_feature_csv(
         enhanced = enhance_image(image, enhancement_settings).enhanced
 
         for annotation in annotations:
-            mask = decode_uncompressed_rle(annotation["segmentation"])
+            mask = annotation_to_mask(annotation, image.shape)
             measured = extract_track_features(mask, enhanced, minimum_area=1.0)
             if not measured:
                 continue
