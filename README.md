@@ -6,7 +6,8 @@ splits so their results can be compared fairly.
 
 ## Selected methodology
 
-1. Acquire a raw image or capture one frame from an MP4/AVI/MOV video.
+1. Acquire one image, a batch of images, or sampled frames from an
+   MP4/AVI/MOV video.
 2. Convert BGR/RGB to grayscale.
 3. Apply Gaussian filtering.
 4. Apply Otsu binary thresholding.
@@ -30,6 +31,41 @@ python -m streamlit run app.py
 ```
 
 Do not run `python app.py`; Streamlit requires its own runner.
+
+On **Shared Processing Pipeline**, choose **Image** to upload several image
+files together and press **Load image batch**. Choose **Video** to preview one
+frame or set the start frame, sampling interval and maximum frame count before
+pressing **Extract video frame batch**. Use the acquisition-batch selector to
+choose the image/frame sent through enhancement, segmentation, feature
+extraction and classification. The filename and video frame number are kept so
+each result remains traceable to its source.
+
+### Understanding the MLP report
+
+After processing an input, open **MLP** and press **Classify and create MLP
+report**. The report separates two different signals:
+
+- **Classification confidence** is the MLP class probability.
+- **Contour quality** is a transparent heuristic based on local contrast,
+  contour shape, thin-track acceptance and analysis-boundary position. It is a
+  review aid, not a correctness probability.
+
+The page provides image-level summary cards, class counts, a colour-coded
+overview, a particle table and collapsible evidence cards containing the exact
+binary contour, all four class probabilities, contour measurements and
+warnings. Yellow boxes are uncertain classifications; grey dashed boxes require
+segmentation review. Results accumulated for different batch images or video
+frames appear in the session batch table.
+
+The MLP confidence slider defaults to `0.60`. Changing it affects only whether
+a prediction is reported as confident or uncertain; it does not retrain the
+model or change its most likely class. The threshold actually used is recorded
+in the JSON and PDF traceability information.
+
+Available downloads are an annotated PNG, particle CSV and multipage PDF
+summary. The PDF report retains the input source, model details, confidence
+threshold and important result information. Batch results remain visible in
+the application summary table.
 
 To test one image without the GUI:
 
@@ -132,25 +168,61 @@ the separate validation split still selects the final candidate.
 - `validation`: tune model hyperparameters and shared pipeline settings.
 - `final_test`: run once after every choice is fixed.
 
-The physical primary split is under `dataset/primary_dataset_split/`. The MÃ¼ller external
-split metadata is under `dataset/external_dataset_split/`; its COCO records
-link to the source images rather than duplicating them. The existing prepared
-datasets are retained even though the former Mask R-CNN model code was removed.
+The physical primary split is under `dataset/primary_dataset_split/`.
 
-Use the same labels for all classifiers: alpha, electron/positron, proton and
-Report per-class precision, recall and F1-score, macro F1-score, confusion
-matrix and processing time.
+### How the Müller split works
+
+The Müller split is **metadata-based**. Its 483 images remain once in
+`dataset/external_dataset/images/` to avoid making three unnecessary copies.
+Members must not select or move those source images manually. Membership is
+defined by the COCO file in each split folder:
+
+| Purpose | COCO file used by the code | Images | Labelled instances |
+| --- | --- | ---: | ---: |
+| Train the model | `dataset/external_dataset_split/development/annotations_coco.json` | 330 | 5,336 |
+| Select parameters | `dataset/external_dataset_split/validation/annotations_coco.json` | 108 | 1,624 |
+| Report the final result once | `dataset/external_dataset_split/final_test/annotations_coco.json` | 45 | 1,484 |
+
+Each COCO image record contains a relative link such as
+`../../external_dataset/images/<image name>.jpg`. The loader resolves this link
+automatically. `manifest.csv` is a human-readable list for checking which
+recording and image belongs to a split; it is not the training input.
+
+For the provided MLP implementation, members normally do not specify the files
+one at a time. Run:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\train_mlp.py --rebuild-features
+```
+
+`scripts/train_mlp.py` automatically loops over `development`, `validation`
+and `final_test`, reads the correct `annotations_coco.json`, trains only on the
+development feature table, selects the candidate on validation, and evaluates
+the selected model on final test. Other model members should follow the same
+split names and may reuse `cloud_chamber/ml/contour_dataset.py` to build or load
+their labelled contour-feature tables.
+
+The split is leakage-safe by recording: an entire video recording belongs to
+only one split. See `dataset/external_dataset_split/summary.json` for the counts
+and audit, which records `recording_group_overlap: false` and
+`image_id_overlap: false`.
+
+Use the same configured labels for all classifiers: `alpha`,
+`electron_positron`, `proton` and Müller `v_track`. Report per-class precision,
+recall and F1-score, macro F1-score, confusion matrix and processing time.
 
 The project taxonomy follows `Types of particle tracks.pdf`: alpha, proton and
 electron/positron (with muon-like thin tracks discussed in the same visual
 group). Figures showing a low-energy electron or a secondary electron describe
-electron behaviour, not additional classes. MÃ¼ller `v_track` annotations are
-excluded rather than incorrectly renamed. The primary dataset contributes
-alpha and electron/positron labels; MÃ¼ller provides all three selected classes.
+electron behaviour, not additional classes. Müller `v_track` is retained as a
+fourth external-dataset class and is never renamed or merged into alpha. The
+primary dataset contributes alpha and electron/positron labels; Müller provides
+all four configured classes.
 
 ### Dataset-specific region of interest
 
-Choose the image layout on the Shared Processing Pipeline page:
+The application identifies the image layout automatically; no analysis-region
+control is shown on the Shared Processing Pipeline page:
 
 - **External MÃ¼ller / already cropped** uses the complete image.
 - **Primary dataset / full chamber** excludes 6% from the left and right, 7%

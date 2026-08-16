@@ -1,0 +1,319 @@
+{
+  "method": "ExtraTreesClassifier",
+  "training_split": "development",
+  "selection_split": "validation",
+  "untouched_evaluation_split": "final_test",
+  "candidate_results": [
+    {
+      "name": "Model A - Baseline",
+      "n_estimators": 100,
+      "max_features": "sqrt",
+      "max_depth": null,
+      "min_samples_leaf": 1,
+      "class_weight": null,
+      "validation_accuracy": 0.7829638273045507,
+      "validation_balanced_accuracy": 0.6616604159434328,
+      "validation_macro_f1": 0.6441749234168651
+    },
+    {
+      "name": "Model B - Balanced 300",
+      "n_estimators": 300,
+      "max_features": "sqrt",
+      "max_depth": null,
+      "min_samples_leaf": 1,
+      "class_weight": "balanced",
+      "validation_accuracy": 0.7911318553092183,
+      "validation_balanced_accuracy": 0.6698729954758226,
+      "validation_macro_f1": 0.6501055520753747
+    },
+    {
+      "name": "Model C - Balanced 500 Depth 20",
+      "n_estimators": 500,
+      "max_features": "sqrt",
+      "max_depth": 20,
+      "min_samples_leaf": 1,
+      "class_weight": "balanced",
+      "validation_accuracy": 0.7899649941656943,
+      "validation_balanced_accuracy": 0.6693794788003837,
+      "validation_macro_f1": 0.6527287009457312
+    },
+    {
+      "name": "Model D - Balanced 500 Leaf 2",
+      "n_estimators": 500,
+      "max_features": "sqrt",
+      "max_depth": 20,
+      "min_samples_leaf": 2,
+      "class_weight": "balanced",
+      "validation_accuracy": 0.7701283547257877,
+      "validation_balanced_accuracy": 0.6719127423066587,
+      "validation_macro_f1": 0.6609185325126608
+    }
+  ],
+  "selected_candidate": {
+    "name": "Model D - Balanced 500 Leaf 2",
+    "n_estimators": 500,
+    "max_features": "sqrt",
+    "max_depth": 20,
+    "min_samples_leaf": 2,
+    "class_weight": "balanced"
+  },
+  "best_validation_macro_f1": 0.6609185325126608,
+  "parameters": {
+    "bootstrap": false,
+    "ccp_alpha": 0.0,
+    "class_weight": "balanced",
+    "criterion": "gini",
+    "max_depth": 20,
+    "max_features": "sqrt",
+    "max_leaf_nodes": null,
+    "max_samples": null,
+    "min_impurity_decrease": 0.0,
+    "min_samples_leaf": 2,
+    "min_samples_split": 2,
+    "min_weight_fraction_leaf": 0.0,
+    "monotonic_cst": null,
+    "n_estimators": 500,
+    "n_jobs": -1,
+    "oob_score": false,
+    "random_state": 42,
+    "verbose": 0,
+    "warm_start": false
+  },
+  "feature_columns": [
+    "area_pixels",
+    "perimeter_pixels",
+    "major_axis_pixels",
+    "mean_width_pixels",
+    "orientation_degrees",
+    "aspect_ratio",
+    "solidity",
+    "rectangularity",
+    "thickness_pixels",
+    "mean_intensity"
+  ],
+  "classes": [
+    "alpha",
+    "electron_positron",
+    "proton",
+    "v_track"
+  ],
+  "class_counts": {
+    "development": {
+      "alpha": 1089,
+      "electron_positron": 896,
+      "proton": 694,
+      "v_track": 253
+    },
+    "validation": {
+      "alpha": 384,
+      "electron_positron": 270,
+      "proton": 82,
+      "v_track": 121
+    },
+    "final_test": {
+      "alpha": 124,
+      "electron_positron": 179,
+      "proton": 170,
+      "v_track": 19
+    }
+  },
+  "validation": {
+    "sample_count": 857,
+    "accuracy": 0.7701283547257877,
+    "balanced_accuracy": 0.6719127423066587,
+    "macro_f1": 0.6609185325126608,
+    "weighted_f1": 0.7530406234708729,
+    "class_names": [
+      "alpha",
+      "electron_positron",
+      "proton",
+      "v_track"
+    ],
+    "confusion_matrix": [
+      [
+        334,
+        4,
+        10,
+        36
+      ],
+      [
+        2,
+        243,
+        25,
+        0
+      ],
+      [
+        6,
+        15,
+        59,
+        2
+      ],
+      [
+        91,
+        1,
+        5,
+        24
+      ]
+    ],
+    "classification_report": {
+      "alpha": {
+        "precision": 0.7713625866050808,
+        "recall": 0.8697916666666666,
+        "f1-score": 0.817625458996328,
+        "support": 384.0
+      },
+      "electron_positron": {
+        "precision": 0.9239543726235742,
+        "recall": 0.9,
+        "f1-score": 0.9118198874296435,
+        "support": 270.0
+      },
+      "proton": {
+        "precision": 0.5959595959595959,
+        "recall": 0.7195121951219512,
+        "f1-score": 0.6519337016574586,
+        "support": 82.0
+      },
+      "v_track": {
+        "precision": 0.3870967741935484,
+        "recall": 0.19834710743801653,
+        "f1-score": 0.26229508196721313,
+        "support": 121.0
+      },
+      "accuracy": 0.7701283547257877,
+      "macro avg": {
+        "precision": 0.6695933323454498,
+        "recall": 0.6719127423066587,
+        "f1-score": 0.6609185325126608,
+        "support": 857.0
+      },
+      "weighted avg": {
+        "precision": 0.7483994287174123,
+        "recall": 0.7701283547257877,
+        "f1-score": 0.7530406234708729,
+        "support": 857.0
+      }
+    }
+  },
+  "final_test": {
+    "sample_count": 492,
+    "accuracy": 0.8556910569105691,
+    "balanced_accuracy": 0.7829587667317403,
+    "macro_f1": 0.7714533159482538,
+    "weighted_f1": 0.85678497728757,
+    "class_names": [
+      "alpha",
+      "electron_positron",
+      "proton",
+      "v_track"
+    ],
+    "confusion_matrix": [
+      [
+        109,
+        1,
+        5,
+        9
+      ],
+      [
+        1,
+        169,
+        9,
+        0
+      ],
+      [
+        23,
+        11,
+        133,
+        3
+      ],
+      [
+        8,
+        0,
+        1,
+        10
+      ]
+    ],
+    "classification_report": {
+      "alpha": {
+        "precision": 0.7730496453900709,
+        "recall": 0.8790322580645161,
+        "f1-score": 0.8226415094339623,
+        "support": 124.0
+      },
+      "electron_positron": {
+        "precision": 0.9337016574585635,
+        "recall": 0.9441340782122905,
+        "f1-score": 0.9388888888888889,
+        "support": 179.0
+      },
+      "proton": {
+        "precision": 0.8986486486486487,
+        "recall": 0.7823529411764706,
+        "f1-score": 0.8364779874213837,
+        "support": 170.0
+      },
+      "v_track": {
+        "precision": 0.45454545454545453,
+        "recall": 0.5263157894736842,
+        "f1-score": 0.4878048780487805,
+        "support": 19.0
+      },
+      "accuracy": 0.8556910569105691,
+      "macro avg": {
+        "precision": 0.7649863515106844,
+        "recall": 0.7829587667317403,
+        "f1-score": 0.7714533159482538,
+        "support": 492.0
+      },
+      "weighted avg": {
+        "precision": 0.8625963142684667,
+        "recall": 0.8556910569105691,
+        "f1-score": 0.85678497728757,
+        "support": 492.0
+      }
+    }
+  },
+  "feature_importance": [
+    {
+      "feature": "mean_intensity",
+      "importance": 0.20968683717398728
+    },
+    {
+      "feature": "thickness_pixels",
+      "importance": 0.16013972817712926
+    },
+    {
+      "feature": "mean_width_pixels",
+      "importance": 0.15789459687095056
+    },
+    {
+      "feature": "area_pixels",
+      "importance": 0.09627171463338827
+    },
+    {
+      "feature": "major_axis_pixels",
+      "importance": 0.07742006609200076
+    },
+    {
+      "feature": "solidity",
+      "importance": 0.07357411174750564
+    },
+    {
+      "feature": "perimeter_pixels",
+      "importance": 0.07301416070360298
+    },
+    {
+      "feature": "rectangularity",
+      "importance": 0.05859081982587768
+    },
+    {
+      "feature": "aspect_ratio",
+      "importance": 0.05602341807154391
+    },
+    {
+      "feature": "orientation_degrees",
+      "importance": 0.037384546704013734
+    }
+  ],
+  "model_path": "C:\\Coding\\CloudChamberDetector\\models\\extra_trees_classifier.joblib"
+}

@@ -25,7 +25,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cloud_chamber.config import load_config
-from cloud_chamber.ml.contour_dataset import build_feature_csv, load_feature_csv
+from cloud_chamber.ml.contour_dataset import (
+    build_segmented_feature_csv,
+    load_feature_csv,
+)
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
 
 
@@ -173,10 +176,10 @@ def main() -> int:
         annotation_path = args.split_root / split / "annotations_coco.json"
         if args.rebuild_features or not feature_path.exists():
             print(f"Building labelled contour features: {split}")
-            class_counts[split] = build_feature_csv(
+            class_counts[split] = build_segmented_feature_csv(
                 annotation_path,
                 feature_path,
-                config["enhancement"],
+                config,
                 allowed_labels=allowed_labels,
             )
         matrix, labels = load_feature_csv(feature_path, allowed_labels)
@@ -237,6 +240,9 @@ def main() -> int:
 
     report = {
         "method": "StandardScaler + MLPClassifier",
+        "feature_source": (
+            "automatic shared segmentation contours labelled by COCO-mask overlap"
+        ),
         "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
         "feature_columns": FEATURE_COLUMNS,
         "class_counts": class_counts,
