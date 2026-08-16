@@ -1,4 +1,4 @@
-﻿"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
+"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
 
 from __future__ import annotations
 
@@ -11,32 +11,35 @@ import numpy as np
 import streamlit as st
 
 from cloud_chamber.config import load_config
+from cloud_chamber.calibration import (
+    calibrate_image,
+    detect_chamber_corners,
+    rectify_image,
+)
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
-from cloud_chamber.ml.member_models.mlp import (
-    build_visual_report,
-    encode_report_csv,
-    encode_report_png,
-    load_model,
-    predict_tracks,
-)
 from cloud_chamber.segmentation import segment_tracks
+from cloud_chamber.ui.navigation import (
+    COMPARISON_PAGE,
+    MODEL_PAGES,
+    PAGES,
+    SHARED_PIPELINE_PAGE,
+    render_selected_page,
+)
+from cloud_chamber.ui.model_pages import (
+    decision_tree_page,
+    extra_trees_page,
+    mlp_page,
+    svm_page,
+)
+from cloud_chamber.ui.model_pages.context import PageContext
 from ui.cnn_page import render_cnn_page
 
-
-MODEL_PAGES = {
-    "CNN": "Convolutional Neural Network",
-    "SVM": "Support Vector Machine",
-    "Decision Tree": "Decision Tree",
-    "MLP": "Multilayer Perceptron",
-    "Extra Trees": "Extremely Randomised Trees",
-}
 ROI_PROFILE_LABELS = {
     "Auto-detect from image shape (recommended)": "auto",
     "External Muller / already cropped": "external_muller",
     "Primary dataset / full chamber": "primary_full_chamber",
 }
-PAGES = ["Shared Processing Pipeline", *MODEL_PAGES, "Final Model Comparison"]
 
 
 def main() -> None:
@@ -53,15 +56,31 @@ def main() -> None:
     page = st.sidebar.radio("Navigate", PAGES)
     _input_status()
 
-    if page == "Shared Processing Pipeline":
-        _shared_pipeline_page(config)
-    elif page == "Final Model Comparison":
-        _comparison_page()
-    else:
-        _model_page(page, MODEL_PAGES[page])
+    render_selected_page(page, config, _build_page_handlers())
+
+
+def _build_page_handlers():
+    """Connect navigation labels to the existing page-rendering functions."""
+    context = PageContext(
+        bgr_to_rgb=_bgr_to_rgb,
+        process_pipeline_image=_process_pipeline_image,
+        feature_row=_feature_row,
+    )
+    return {
+        SHARED_PIPELINE_PAGE: _shared_pipeline_page,
+        "CNN": lambda _config: render_cnn_page(),
+        "SVM": lambda _config: svm_page.render(context),
+        "Decision Tree": lambda _config: decision_tree_page.render(context),
+        "MLP": lambda config: mlp_page.render(
+            "MLP", MODEL_PAGES["MLP"], config, context
+        ),
+        "Extra Trees": lambda _config: extra_trees_page.render(context),
+        COMPARISON_PAGE: lambda _config: _comparison_page(),
+    }
 
 
 def _initialise_state() -> None:
+    st.session_state.setdefault("input_batch", [])
     st.session_state.setdefault("input_image", None)
     st.session_state.setdefault("input_name", None)
     st.session_state.setdefault("input_images", [])
@@ -70,69 +89,308 @@ def _initialise_state() -> None:
     st.session_state.setdefault("pipeline_result", None)
     st.session_state.setdefault("mlp_predictions", None)
     st.session_state.setdefault("cnn_predictions", None)
+    st.session_state.setdefault("svm_predictions", None)
+    st.session_state.setdefault("extra_trees_predictions", None)
     st.session_state.setdefault(
         "layout_choice", "Auto-detect from image shape (recommended)"
     )
-    if st.session_state["layout_choice"] not in ROI_PROFILE_LABELS:
-        # Replace an obsolete selection retained by an older Streamlit session.
-        st.session_state["layout_choice"] = (
-            "Auto-detect from image shape (recommended)"
-        )
+    st.session_state.setdefault("mlp_quality", None)
+    st.session_state.setdefault("batch_reports", {})
+    st.session_state.setdefault("mlp_batch_results", {})
+    st.session_state.setdefault("calibration_settings", None)
 
 
 def _shared_pipeline_page(config: dict) -> None:
     st.title("Shared Image Processing Pipeline")
-    st.info(
-        "Purpose: acquire an image or video frame, apply grayscale conversion "
-        "and Gaussian filtering, segment tracks using thresholding and "
-        "morphology, then extract one common contour-based feature vector."
-    )
 
-    st.header("1. Image or video-frame acquisition")
-    _acquisition_section()
+    st.header("Image or video-frame acquisition")
+    _acquisition_section(config)
     image = st.session_state.get("input_image")
     if image is None:
         return
 
-    st.subheader("Analysis region")
-    profile_label = st.selectbox(
-        "Dataset/image layout",
-        list(ROI_PROFILE_LABELS),
-        key="layout_choice",
+    calibration_settings = _calibration_section(image)
+    result = _process_pipeline_image(image, config, calibration_settings)
+    analysis_image = result["input_image"]
+    enhancement = result["enhancement"]
+    segmentation = result["segmentation"]
+    features = result["features"]
+    st.header("Grayscale conversion and Gaussian filtering")
+    columns = st.columns(3)
+    columns[0].image(_bgr_to_rgb(analysis_image), caption="Calibrated input")
+    columns[1].image(enhancement.grey, caption="Grayscale")
+    columns[2].image(enhancement.denoised, caption="Gaussian filtered")
+
+    st.header("Thresholding, morphology and contour detection")
+    intermediate = segmentation.intermediate_images
+    columns = st.columns(4)
+    columns[0].image(
+        intermediate["local_bright_tracks"],
+        caption="Morphological Operation: White top-hat",
+    )
+    columns[1].image(intermediate["threshold"], caption="Otsu thresholding")
+    columns[2].image(
+        intermediate["morphological_closing"],
+        caption="Morphological operation: Closing",
+    )
+    columns[3].image(
+        segmentation.binary_mask,
+        caption="Contour detection and filtering",
+    )
+
+    st.session_state["pipeline_result"] = result
+    # A changed image or segmentation produces different track IDs/features.
+    # Never display predictions cached for the previous pipeline result.
+    st.session_state["mlp_predictions"] = None
+    st.session_state["cnn_predictions"] = None
+    st.session_state["mlp_quality"] = None
+    st.session_state["batch_reports"].pop(
+        st.session_state.get("input_name"), None
+    )
+
+    overlay = analysis_image.copy()
+    # These boxes come only from the accepted contours used to create the
+    # clean mask above. Rejected and out-of-ROI contours cannot appear here.
+    for x, y, width, height in segmentation.bounding_boxes:
+        cv2.rectangle(overlay, (x, y), (x + width, y + height), (0, 255, 255), 2)
+    st.image(_bgr_to_rgb(overlay), caption="Detected particle-track contours")
+
+    st.header("Contour-based feature extraction")
+    rows = [
+        _feature_row(item, result["centimetres_per_pixel"])
+        for item in features
+    ]
+    if rows:
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.warning("No contour passed the configured minimum-area filter.")
+
+
+def _calibration_section(image: np.ndarray) -> dict | None:
+    """Collect an optional physical reference and perspective correction."""
+    st.header("Image calibration")
+    height, width = image.shape[:2]
+    controls = st.columns(2)
+    spatial_enabled = controls[0].checkbox(
+        "Enable spatial calibration",
+        value=False,
         help=(
-            "MÃ¼ller images are already cropped. Primary images contain bright "
-            "chamber walls, so analysis is restricted to the inner chamber."
+            "Enable this only when a real distance in the image is known. "
+            "Without a reference, measurements correctly remain in pixels."
         ),
     )
-    profile_name = ROI_PROFILE_LABELS[profile_label]
-    detected_profile = _detect_layout_profile(image)
-    if profile_name == "auto":
-        profile_name = detected_profile
-        detected_label = (
-            "Primary dataset / full chamber"
-            if profile_name == "primary_full_chamber"
-            else "External Muller / already cropped"
+    rectify = controls[1].checkbox(
+        "Apply perspective rectification",
+        value=False,
+        help=(
+            "Correct an angled rectangular chamber. This can be used without "
+            "a physical centimetre reference."
+        ),
+    )
+    if not spatial_enabled and not rectify:
+        st.caption(
+            "Calibration and rectification are disabled; geometric "
+            "measurements use pixels."
         )
-        st.info(f"Automatically detected layout: **{detected_label}**")
-    elif profile_name != detected_profile:
-        expected = (
-            "Primary dataset / full chamber"
-            if detected_profile == "primary_full_chamber"
-            else "External Muller / already cropped"
+        st.session_state["calibration_settings"] = None
+        return None
+
+    known_length_cm = None
+    reference_points = None
+    if spatial_enabled:
+        known_length_cm = st.number_input(
+            "Known reference length (cm)",
+            min_value=0.001,
+            value=1.0,
+            step=0.1,
+            format="%.3f",
+            help="Measure a visible reference object or chamber dimension.",
         )
-        st.error(
-            f"The selected profile conflicts with the image shape. Use "
-            f"**{expected}**, or select automatic detection. Processing has "
-            "been stopped to prevent an invalid segmentation result."
+        st.caption(
+            "Enter the pixel coordinates of the two endpoints of that same "
+            "reference. Coordinates start at (0, 0) in the top-left corner."
         )
-        return
+        reference_columns = st.columns(4)
+        x1 = reference_columns[0].number_input(
+            "Reference X1", 0, width - 1, 0, key="calibration_x1"
+        )
+        y1 = reference_columns[1].number_input(
+            "Reference Y1", 0, height - 1, 0, key="calibration_y1"
+        )
+        x2 = reference_columns[2].number_input(
+            "Reference X2", 0, width - 1, width - 1, key="calibration_x2"
+        )
+        y2 = reference_columns[3].number_input(
+            "Reference Y2", 0, height - 1, 0, key="calibration_y2"
+        )
+        reference_points = [
+            (float(x1), float(y1)),
+            (float(x2), float(y2)),
+        ]
+
+    rectification_points = None
+    if rectify:
+        detected_corners = detect_chamber_corners(image)
+        source_key = f"{st.session_state.get('input_name')}:{width}x{height}"
+        coordinate_keys = [
+            (f"rectification_x_{index}", f"rectification_y_{index}")
+            for index in range(4)
+        ]
+        newly_enabled = not st.session_state.get(
+            "rectification_was_enabled", False
+        )
+        if (
+            st.session_state.get("calibration_corner_source") != source_key
+            or newly_enabled
+        ):
+            st.session_state["calibration_corner_source"] = source_key
+            for point, (x_key, y_key) in zip(
+                detected_corners, coordinate_keys
+            ):
+                st.session_state[x_key] = int(round(float(point[0])))
+                st.session_state[y_key] = int(round(float(point[1])))
+        st.session_state["rectification_was_enabled"] = True
+
+        if st.button("Reset coordinates to automatic values"):
+            for point, (x_key, y_key) in zip(
+                detected_corners, coordinate_keys
+            ):
+                st.session_state[x_key] = int(round(float(point[0])))
+                st.session_state[y_key] = int(round(float(point[1])))
+
+        names = ("Top-left", "Top-right", "Bottom-right", "Bottom-left")
+        points = []
+        with st.expander("Rectification corner coordinates", expanded=True):
+            st.caption(
+                "Values are filled automatically. Adjust them if the preview "
+                "does not follow the real chamber boundary."
+            )
+            for index, (name, (x_key, y_key)) in enumerate(
+                zip(names, coordinate_keys)
+            ):
+                columns = st.columns(2)
+                point_x = columns[0].number_input(
+                    f"{name} X",
+                    min_value=0,
+                    max_value=width - 1,
+                    step=1,
+                    key=x_key,
+                )
+                point_y = columns[1].number_input(
+                    f"{name} Y",
+                    min_value=0,
+                    max_value=height - 1,
+                    step=1,
+                    key=y_key,
+                )
+                points.append((float(point_x), float(point_y)))
+        rectification_points = points
+
+        adjusted_corners = np.asarray(points, dtype=np.int32)
+        corner_preview = image.copy()
+        for index, (point, corner_label) in enumerate(
+            zip(adjusted_corners, ("TL", "TR", "BR", "BL"))
+        ):
+            x, y = int(point[0]), int(point[1])
+            next_point = adjusted_corners[(index + 1) % 4]
+            cv2.line(
+                corner_preview,
+                (x, y),
+                (int(next_point[0]), int(next_point[1])),
+                (0, 255, 255),
+                3,
+            )
+            cv2.circle(corner_preview, (x, y), 10, (0, 255, 255), -1)
+            cv2.putText(
+                corner_preview,
+                corner_label,
+                (x + 12, max(y - 12, 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        st.image(
+            _bgr_to_rgb(corner_preview),
+            caption="Editable chamber boundary used for rectification",
+        )
+    else:
+        # The next transition from disabled to enabled must start from a fresh
+        # automatic estimate rather than values edited during an earlier run.
+        st.session_state["rectification_was_enabled"] = False
+
+    settings = {
+        "spatial_enabled": spatial_enabled,
+        "known_length_cm": (
+            float(known_length_cm) if known_length_cm is not None else None
+        ),
+        "reference_points": reference_points,
+        "rectification_points": rectification_points,
+    }
+    try:
+        if spatial_enabled:
+            preview = calibrate_image(
+                image,
+                settings["known_length_cm"],
+                settings["reference_points"],
+                settings["rectification_points"],
+            )
+            preview_image = preview.image
+            st.metric(
+                "Spatial scale",
+                f"{preview.centimetres_per_pixel:.6f} cm/pixel",
+            )
+        else:
+            preview_image = rectify_image(image, rectification_points)
+    except ValueError as error:
+        st.error(str(error))
+        st.stop()
+    if rectify:
+        st.image(
+            _bgr_to_rgb(preview_image), caption="Perspective-rectified image"
+        )
+        if not spatial_enabled:
+            st.caption(
+                "Perspective was corrected, but measurements remain in pixels "
+                "because no physical reference was supplied."
+            )
+    st.session_state["calibration_settings"] = settings
+    return settings
+
+
+def _process_pipeline_image(
+    image: np.ndarray,
+    config: dict,
+    calibration_settings: dict | None = None,
+) -> dict:
+    """Run the identical shared pipeline for one image without drawing UI."""
+    analysis_image = image
+    centimetres_per_pixel = None
+    rectified = False
+    if calibration_settings:
+        if calibration_settings.get("spatial_enabled"):
+            calibration = calibrate_image(
+                image,
+                calibration_settings["known_length_cm"],
+                calibration_settings["reference_points"],
+                calibration_settings.get("rectification_points"),
+            )
+            analysis_image = calibration.image
+            centimetres_per_pixel = calibration.centimetres_per_pixel
+            rectified = calibration.rectified
+        elif calibration_settings.get("rectification_points") is not None:
+            analysis_image = rectify_image(
+                image, calibration_settings["rectification_points"]
+            )
+            rectified = True
+
+    profile_name = _detect_layout_profile(analysis_image)
     selected_profile = config["segmentation"]["roi_profiles"][profile_name]
     roi_margins = {
         side: selected_profile[side]
         for side in ("left", "right", "top", "bottom")
     }
-    # The image sources have different noise and framing. Keep the same
-    # algorithm but apply the validation-selected parameters for that source.
     segmentation_settings = {
         **config["segmentation"],
         **{
@@ -141,138 +399,41 @@ def _shared_pipeline_page(config: dict) -> None:
             if name not in roi_margins
         },
     }
-    st.success(
-        f"Active profile: {profile_name} | "
-        f"threshold offset={segmentation_settings['threshold_offset']}, "
-        f"closing={segmentation_settings['closing_kernel']}x"
-        f"{segmentation_settings['closing_kernel']}, "
-        f"minimum area={segmentation_settings['minimum_object_area']} px^2, "
-        f"minimum length={segmentation_settings['minimum_major_axis']} px."
-    )
-
-    st.header("2. Grayscale conversion and Gaussian filtering")
-    enhancement = enhance_image(image, config["enhancement"])
-    columns = st.columns(3)
-    columns[0].image(_bgr_to_rgb(image), caption="Original input")
-    columns[1].image(enhancement.grey, caption="Grayscale")
-    columns[2].image(enhancement.denoised, caption="Gaussian filtered")
-
-    st.header("3. Thresholding, morphology and contour detection")
+    enhancement = enhance_image(analysis_image, config["enhancement"])
     segmentation = segment_tracks(
         enhancement.enhanced,
         segmentation_settings,
         roi_margins,
     )
-    intermediate = segmentation.intermediate_images
-    columns = st.columns(4)
-    columns[0].image(
-        intermediate["local_bright_tracks"],
-        caption="Morphological white top-hat: local bright tracks",
-    )
-    columns[1].image(
-        intermediate["threshold"],
-        caption=(
-            f"Otsu + {segmentation.parameters['threshold_offset']:.0f} "
-            f"(applied value {segmentation.parameters['applied_threshold']:.0f})"
-        ),
-    )
-    columns[2].image(
-        intermediate["morphological_closing"],
-        caption="Closing first: reconnect short track gaps",
-    )
-    columns[3].image(
-        segmentation.binary_mask,
-        caption="Accepted regions after contour size/shape filtering",
-    )
-    st.caption(
-        "Morphological opening is disabled to preserve very thin tracks. "
-        "Small dots are rejected afterward using area, length and elongation."
-    )
-    st.caption(
-        f"Small-blob filter: {segmentation.parameters['candidate_count_before_filter']} "
-        f"initial contours, {segmentation.parameters['rejected_candidate_count']} "
-        f"rejected, {segmentation.parameters['candidate_count_after_filter']} accepted."
-    )
-    with st.expander("Inspect rejected small/compact regions"):
-        st.image(
-            intermediate["rejected_small_blobs"],
-            caption=(
-                "White regions were rejected before feature extraction and "
-                "are therefore not sent to the classifiers."
-            ),
+    feature_minimum_area = float(segmentation_settings["minimum_object_area"])
+    if segmentation_settings.get("enable_thin_track_rule", True):
+        feature_minimum_area = min(
+            feature_minimum_area,
+            float(segmentation_settings["minimum_thin_area"]),
         )
-        st.json(
-            {
-                "general-track minimum area (px^2)": segmentation.parameters[
-                    "minimum_area"
-                ],
-                "minimum major axis (px)": segmentation.parameters[
-                    "minimum_major_axis"
-                ],
-                "thin-track minimum area (px^2)": segmentation.parameters[
-                    "minimum_thin_area"
-                ],
-                "thin-track minimum perimeter (px)": segmentation.parameters[
-                    "minimum_thin_perimeter"
-                ],
-                "thin-track minimum major axis (px)": segmentation.parameters[
-                    "minimum_thin_major_axis"
-                ],
-                "thin-track minimum aspect ratio": segmentation.parameters[
-                    "minimum_thin_aspect_ratio"
-                ],
-            }
-        )
-    with st.expander("Inspect selected region of interest"):
-        roi = segmentation.parameters["roi_pixels"]
-        roi_preview = image.copy()
-        cv2.rectangle(
-            roi_preview,
-            (roi["left"], roi["top"]),
-            (roi["right"] - 1, roi["bottom"] - 1),
-            (255, 255, 0),
-            3,
-        )
-        st.image(
-            _bgr_to_rgb(roi_preview),
-            caption=(
-                "Only pixels inside the cyan rectangle are eligible for "
-                "accepted contours, features and bounding boxes."
-            ),
-        )
-
     features = extract_track_features(
         segmentation.binary_mask,
         enhancement.enhanced,
-        minimum_area=float(segmentation_settings["minimum_object_area"]),
+        minimum_area=feature_minimum_area,
     )
-    st.session_state["pipeline_result"] = {
+    return {
+        "input_image": analysis_image,
         "enhancement": enhancement,
         "segmentation": segmentation,
         "features": features,
         "roi_profile": profile_name,
+        "centimetres_per_pixel": centimetres_per_pixel,
+        "rectified": rectified,
     }
 
-    overlay = image.copy()
-    # These boxes come only from the accepted contours used to create the
-    # clean mask above. Rejected and out-of-ROI contours cannot appear here.
-    for x, y, width, height in segmentation.bounding_boxes:
-        cv2.rectangle(overlay, (x, y), (x + width, y + height), (0, 255, 255), 2)
-    st.image(_bgr_to_rgb(overlay), caption="Detected particle-track contours")
 
-    st.header("4. Contour-based feature extraction")
-    st.caption(
-        "These identical numerical features are the controlled input for all "
-        "five team-member classifiers."
-    )
-    rows = [_feature_row(item) for item in features]
-    if rows:
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-    else:
-        st.warning("No contour passed the configured minimum-area filter.")
+def _acquisition_section(config: dict) -> None:
+    """Acquire a batch of images or sampled video frames.
 
-
-def _acquisition_section() -> None:
+    The processing stages still analyse one image at a time. Keeping all
+    acquired samples in a session batch lets the user move between them
+    without uploading the files again.
+    """
     source_type = st.radio("Input type", ["Image", "Video"], horizontal=True)
     if source_type == "Image":
         uploads = st.file_uploader(
@@ -281,34 +442,53 @@ def _acquisition_section() -> None:
             accept_multiple_files=True,
         )
         if uploads:
-            loaded = []
+            samples = []
+            failures = []
             for upload in uploads:
-                image = _decode_uploaded_image(upload.getvalue())
-                loaded.append((image, upload.name))
-            st.session_state["input_images"] = loaded
-            st.session_state["selected_input_index"] = 0
-            if loaded:
-                image, name = loaded[0]
-                _set_input(image, name, "Uploaded image")
-            st.success(f"Loaded {len(loaded)} image(s). Choose one from the selector below.")
+                try:
+                    image = _decode_uploaded_image(upload.getvalue())
+                    samples.append(
+                        {
+                            "image": image,
+                            "name": upload.name,
+                            "description": f"Uploaded image: {upload.name}",
+                        }
+                    )
+                except ValueError:
+                    failures.append(upload.name)
 
-        if st.session_state["input_images"]:
-            names = [name for _, name in st.session_state["input_images"]]
+            if samples:
+                _replace_input_batch(samples)
+                st.session_state["input_images"] = [
+                    (sample["image"], sample["name"]) for sample in samples
+                ]
+                st.session_state["selected_input_index"] = 0
+                st.success(
+                    f"Loaded {len(samples)} image(s). Choose one from the selector below."
+                )
+            if failures:
+                st.warning("Unreadable files skipped: " + ", ".join(failures))
+
+        if st.session_state.get("input_batch"):
+            names = [sample["name"] for sample in st.session_state["input_batch"]]
             selected = st.selectbox("Select image for analysis", names)
             index = names.index(selected)
-            if index != st.session_state["selected_input_index"]:
-                st.session_state["selected_input_index"] = index
-            image, name = st.session_state["input_images"][index]
-            _set_input(image, name, "Uploaded image")
+            st.session_state["selected_input_index"] = index
+            sample = st.session_state["input_batch"][index]
+            _set_input(sample["image"], sample["name"], sample["description"])
         return
 
     upload = st.file_uploader(
         "Upload a cloud-chamber video", type=["mp4", "avi", "mov"]
     )
-    if upload is None:
-        st.caption("Select one video frame; that frame is analysed as an image.")
-        return
+    if upload is not None:
+        _video_acquisition(upload, config)
 
+    _batch_selector()
+
+
+def _video_acquisition(upload, config: dict) -> None:
+    """Preview a video and acquire either one frame or a sampled frame batch."""
     with tempfile.NamedTemporaryFile(
         suffix=Path(upload.name).suffix, delete=False
     ) as temporary:
@@ -322,24 +502,72 @@ def _acquisition_section() -> None:
             return
         frame_count = max(int(capture.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
         fps = float(capture.get(cv2.CAP_PROP_FPS))
-        frame_number = st.slider("Frame number", 0, frame_count - 1, 0)
+        duration = frame_count / fps if fps > 0 else 0.0
+        st.caption(
+            f"{frame_count:,} frames | {fps:.2f} fps | {duration:.2f} seconds"
+        )
+
+        frame_number = st.slider("Preview frame", 0, frame_count - 1, 0)
         capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         success, frame = capture.read()
-        capture.release()
-        if not success:
-            st.error("The selected frame could not be captured.")
-            return
-        timestamp = frame_number / fps if fps > 0 else 0.0
-        st.image(
-            _bgr_to_rgb(frame),
-            caption=f"Frame {frame_number} ({timestamp:.2f} seconds)",
+        if success:
+            timestamp = frame_number / fps if fps > 0 else 0.0
+            st.image(
+                _bgr_to_rgb(frame),
+                caption=f"Frame {frame_number} ({timestamp:.2f} seconds)",
+            )
+            if st.button("Load preview frame only"):
+                sample = _video_sample(upload.name, frame, frame_number, fps)
+                _replace_input_batch([sample])
+
+        st.subheader("Video frame batch")
+        controls = st.columns(3)
+        start_frame = controls[0].number_input(
+            "Start frame", 0, frame_count - 1, 0, step=1
         )
-        if st.button("Use this frame for processing", type="primary"):
-            name = f"{Path(upload.name).stem}_frame_{frame_number:06d}"
-            _set_input(frame, name, f"{upload.name}, frame {frame_number}")
-            st.success("Video frame loaded.")
+        frame_interval = controls[1].number_input(
+            "Sample every N frames",
+            min_value=1,
+            max_value=frame_count,
+            value=min(int(config["acquisition"]["frame_interval"]), frame_count),
+            step=1,
+            help="A larger interval reduces near-duplicate neighbouring frames.",
+        )
+        maximum_frames = controls[2].number_input(
+            "Maximum frames", 1, 200, min(30, frame_count), step=1
+        )
+        if st.button("Extract video frame batch", type="primary"):
+            samples = []
+            for index in range(
+                int(start_frame), frame_count, int(frame_interval)
+            ):
+                if len(samples) >= int(maximum_frames):
+                    break
+                capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+                captured, sampled_frame = capture.read()
+                if captured:
+                    samples.append(
+                        _video_sample(upload.name, sampled_frame, index, fps)
+                    )
+            _replace_input_batch(samples)
+            st.success(f"Extracted {len(samples)} frame(s) from the video.")
+        capture.release()
     finally:
         video_path.unlink(missing_ok=True)
+
+
+def _video_sample(
+    video_name: str, frame: np.ndarray, frame_number: int, fps: float
+) -> dict:
+    """Create traceable metadata for one acquired video frame."""
+    timestamp = frame_number / fps if fps > 0 else 0.0
+    return {
+        "image": frame.copy(),
+        "name": f"{Path(video_name).stem}_frame_{frame_number:06d}.jpg",
+        "description": (
+            f"{video_name}, frame {frame_number}, {timestamp:.2f} seconds"
+        ),
+    }
 
 
 def _model_page(short_name: str, full_name: str) -> None:
@@ -392,52 +620,90 @@ def _model_page(short_name: str, full_name: str) -> None:
             "Uncertain. This threshold does not retrain the model."
         ),
     )
-    if st.button("Classify and create MLP report", type="primary"):
-        st.session_state["mlp_predictions"] = predict_tracks(
-            load_model(model_path), result["features"]
+    st.caption("This page remains a stub until the member model is connected.")
+
+
+def _replace_input_batch(samples: list[dict]) -> None:
+    """Replace the acquisition queue and activate its first valid sample."""
+    st.session_state["input_batch"] = samples
+    st.session_state["mlp_batch_results"] = {}
+    st.session_state["svm_batch_results"] = {}
+    st.session_state["decision_tree_batch_results"] = {}
+    st.session_state["batch_reports"] = {}
+    if samples:
+        first = samples[0]
+        _set_input(first["image"], first["name"], first["description"])
+
+
+def _batch_selector() -> None:
+    """Select the sample sent through the existing one-image pipeline."""
+    samples = st.session_state.get("input_batch", [])
+    if not samples:
+        st.caption("No acquisition batch has been loaded yet.")
+        return
+    st.subheader("Acquisition batch")
+    names = [sample["name"] for sample in samples]
+    current_name = st.session_state.get("input_name")
+    default_index = names.index(current_name) if current_name in names else 0
+    selected_index = st.selectbox(
+        f"Select an input to analyse ({len(samples)} available)",
+        range(len(samples)),
+        index=default_index,
+        format_func=lambda index: f"Image {index + 1}: {names[index]}",
+    )
+    selected = samples[selected_index]
+    if selected["name"] != current_name:
+        _set_input(
+            selected["image"], selected["name"], selected["description"]
         )
+    st.caption(selected["description"])
 
-    predictions = st.session_state.get("mlp_predictions")
-    if predictions is None:
-        return
-    if not predictions:
-        st.warning("No segmented track is available for classification.")
-        return
+    # Expanders keep a large upload readable: users first see Image 1,
+    # Image 2, etc., and reveal only the previews they want to inspect.
+    show_gallery = st.checkbox(
+        f"Show batch gallery ({len(samples)} image entries)", value=False
+    )
+    if show_gallery:
+        previews_per_page = 12
+        page_count = max(
+            1, (len(samples) + previews_per_page - 1) // previews_per_page
+        )
+        page = st.number_input(
+            "Preview page",
+            min_value=1,
+            max_value=page_count,
+            value=1,
+            step=1,
+            help=(
+                "Only 12 entries are placed on a page so a long video batch "
+                "does not overload the browser."
+            ),
+        )
+        start = (int(page) - 1) * previews_per_page
+        stop = min(start + previews_per_page, len(samples))
+        st.caption(f"Showing entries {start + 1}–{stop} of {len(samples)}.")
+        for index in range(start, stop):
+            sample = samples[index]
+            active_text = " — active input" if index == selected_index else ""
+            with st.expander(
+                f"Image {index + 1}: {sample['name']}{active_text}",
+                expanded=False,
+            ):
+                st.image(
+                    _bgr_to_rgb(sample["image"]),
+                    caption=sample["description"],
+                    use_container_width=True,
+                )
 
-    overlay, report_rows = build_visual_report(
-        st.session_state["input_image"],
-        result["features"],
-        predictions,
-        confidence_threshold,
-    )
-    st.subheader("Particle classification report")
-    st.image(
-        _bgr_to_rgb(overlay),
-        caption=(
-            "MLP particle predictions. Yellow annotations are below the "
-            "selected confidence threshold."
-        ),
-    )
-    st.dataframe(report_rows, use_container_width=True, hide_index=True)
-    st.caption(
-        "The label is the model's most likely class for each segmented "
-        "contour. It is a prediction, not direct physical confirmation."
-    )
 
-    safe_name = Path(st.session_state["input_name"]).stem
-    downloads = st.columns(2)
-    downloads[0].download_button(
-        "Download annotated image",
-        data=encode_report_png(overlay),
-        file_name=f"{safe_name}_mlp_report.png",
-        mime="image/png",
-    )
-    downloads[1].download_button(
-        "Download classification CSV",
-        data=encode_report_csv(report_rows),
-        file_name=f"{safe_name}_mlp_report.csv",
-        mime="text/csv",
-    )
+
+
+
+
+
+
+
+
 
 
 def _comparison_page() -> None:
@@ -488,8 +754,8 @@ def _comparison_page() -> None:
     )
 
 
-def _feature_row(item) -> dict:
-    return {
+def _feature_row(item, centimetres_per_pixel: float | None = None) -> dict:
+    row = {
         "Track": item.track_id,
         "Area (pxÂ²)": round(item.area_pixels, 3),
         "Perimeter (px)": round(item.perimeter_pixels, 3),
@@ -502,6 +768,18 @@ def _feature_row(item) -> dict:
         "Orientation (Â°)": round(item.orientation_degrees, 3),
         "Mean intensity": round(item.mean_intensity, 3),
     }
+    if centimetres_per_pixel is not None:
+        scale = float(centimetres_per_pixel)
+        row.update(
+            {
+                "Area (cm²)": round(item.area_pixels * scale * scale, 6),
+                "Perimeter (cm)": round(item.perimeter_pixels * scale, 6),
+                "Length (cm)": round(item.major_axis_pixels * scale, 6),
+                "Width (cm)": round(item.mean_width_pixels * scale, 6),
+                "Thickness (cm)": round(item.thickness_pixels * scale, 6),
+            }
+        )
+    return row
 
 
 def _set_input(image: np.ndarray, name: str, description: str) -> None:
@@ -510,6 +788,15 @@ def _set_input(image: np.ndarray, name: str, description: str) -> None:
     st.session_state["source_description"] = description
     st.session_state["pipeline_result"] = None
     st.session_state["mlp_predictions"] = None
+    st.session_state["mlp_quality"] = None
+    st.session_state["svm_predictions"] = None
+    st.session_state["svm_quality"] = None
+    st.session_state["decision_tree_predictions"] = None
+    st.session_state["decision_tree_quality"] = None
+    st.session_state["extra_trees_predictions"] = None
+
+
+
 
 
 def _detect_layout_profile(image: np.ndarray) -> str:
@@ -546,4 +833,3 @@ def _bgr_to_rgb(image: np.ndarray) -> np.ndarray:
 
 if __name__ == "__main__":
     main()
-

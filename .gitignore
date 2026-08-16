@@ -9,6 +9,4 @@ data/frames/*
 !data/frames/.gitkeep
 tmp/*
 .agents/
-models/*.pt
-models/*.joblib
 data/features/

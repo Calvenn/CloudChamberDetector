@@ -111,6 +111,7 @@ def build_visual_report(
     features: Iterable[TrackFeatures],
     predictions: list[dict],
     confidence_threshold: float = 0.60,
+    quality_assessments: list[dict] | None = None,
 ) -> tuple[np.ndarray, list[dict]]:
     """Draw classified tracks and build the matching tabular report.
 
@@ -121,6 +122,9 @@ def build_visual_report(
     feature_list = list(features)
     if len(feature_list) != len(predictions):
         raise ValueError("Feature and prediction counts must be equal")
+    quality_by_track = {
+        int(item["track_id"]): item for item in (quality_assessments or [])
+    }
 
     overlay = image.copy()
     rows = []
@@ -128,16 +132,35 @@ def build_visual_report(
         x, y, width, height = track.bounding_box
         confidence = float(prediction["confidence"])
         uncertain = confidence < confidence_threshold
-        colour = (0, 255, 255) if uncertain else CLASS_COLOURS.get(
-            prediction["predicted_class"], (255, 255, 255)
-        )
+        quality = quality_by_track.get(track.track_id)
+        low_quality = quality is not None and int(quality["score"]) < 50
+        if low_quality:
+            colour = (160, 160, 160)
+        elif uncertain:
+            colour = (0, 255, 255)
+        else:
+            colour = CLASS_COLOURS.get(
+                prediction["predicted_class"], (255, 255, 255)
+            )
 
         # The same track ID connects the picture, feature table and CSV row.
-        cv2.rectangle(overlay, (x, y), (x + width, y + height), colour, 2)
-        status = "Uncertain" if uncertain else "Accepted"
+        if low_quality:
+            _draw_dashed_rectangle(
+                overlay, (x, y), (x + width, y + height), colour
+            )
+        else:
+            cv2.rectangle(overlay, (x, y), (x + width, y + height), colour, 2)
+        status = (
+            "Review segmentation"
+            if low_quality
+            else "Uncertain"
+            if uncertain
+            else "Accepted"
+        )
+        quality_text = f" | Q:{quality['grade']}" if quality else ""
         label = (
             f"T{track.track_id}: {prediction['particle_type']} "
-            f"{confidence:.0%}"
+            f"{confidence:.0%}{quality_text}"
         )
         text_y = max(y - 7, 16)
         cv2.putText(
@@ -156,6 +179,9 @@ def build_visual_report(
                 "Particle type": prediction["particle_type"],
                 "Confidence": confidence,
                 "Status": status,
+                "Contour quality": quality["grade"] if quality else "Not assessed",
+                "Contour quality score": quality["score"] if quality else "",
+                "Local contrast": quality["local_contrast"] if quality else "",
                 "X": x,
                 "Y": y,
                 "Width": width,
@@ -168,6 +194,24 @@ def build_visual_report(
             }
         )
     return overlay, rows
+
+
+def _draw_dashed_rectangle(
+    image: np.ndarray,
+    top_left: tuple[int, int],
+    bottom_right: tuple[int, int],
+    colour: tuple[int, int, int],
+    dash_length: int = 8,
+) -> None:
+    """Draw a dashed review box without hiding the underlying particle."""
+    x1, y1 = top_left
+    x2, y2 = bottom_right
+    for start in range(x1, x2, dash_length * 2):
+        cv2.line(image, (start, y1), (min(start + dash_length, x2), y1), colour, 2)
+        cv2.line(image, (start, y2), (min(start + dash_length, x2), y2), colour, 2)
+    for start in range(y1, y2, dash_length * 2):
+        cv2.line(image, (x1, start), (x1, min(start + dash_length, y2)), colour, 2)
+        cv2.line(image, (x2, start), (x2, min(start + dash_length, y2)), colour, 2)
 
 
 def encode_report_png(overlay: np.ndarray) -> bytes:
