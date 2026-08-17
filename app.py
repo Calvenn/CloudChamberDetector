@@ -33,6 +33,13 @@ from cloud_chamber.ui.model_pages import (
     svm_page,
 )
 from cloud_chamber.ui.model_pages.context import PageContext
+from ui.cnn_page import render_cnn_page
+
+ROI_PROFILE_LABELS = {
+    "Auto-detect from image shape (recommended)": "auto",
+    "External Muller / already cropped": "external_muller",
+    "Primary dataset / full chamber": "primary_full_chamber",
+}
 
 
 def main() -> None:
@@ -61,7 +68,7 @@ def _build_page_handlers():
     )
     return {
         SHARED_PIPELINE_PAGE: _shared_pipeline_page,
-        "CNN": lambda _config: st.title("CNN Classifier"),
+        "CNN": lambda config: render_cnn_page(config, context),
         "SVM": lambda _config: svm_page.render(context),
         "Decision Tree": lambda _config: decision_tree_page.render(context),
         "MLP": lambda config: mlp_page.render(
@@ -76,9 +83,12 @@ def _initialise_state() -> None:
     st.session_state.setdefault("input_batch", [])
     st.session_state.setdefault("input_image", None)
     st.session_state.setdefault("input_name", None)
+    st.session_state.setdefault("input_images", [])
+    st.session_state.setdefault("selected_input_index", 0)
     st.session_state.setdefault("source_description", None)
     st.session_state.setdefault("pipeline_result", None)
     st.session_state.setdefault("mlp_predictions", None)
+    st.session_state.setdefault("cnn_predictions", None)
     st.session_state.setdefault("svm_predictions", None)
     st.session_state.setdefault("extra_trees_predictions", None)
     st.session_state.setdefault(
@@ -132,6 +142,7 @@ def _shared_pipeline_page(config: dict) -> None:
     # A changed image or segmentation produces different track IDs/features.
     # Never display predictions cached for the previous pipeline result.
     st.session_state["mlp_predictions"] = None
+    st.session_state["cnn_predictions"] = None
     st.session_state["mlp_quality"] = None
     st.session_state["batch_reports"].pop(
         st.session_state.get("input_name"), None
@@ -430,30 +441,48 @@ def _acquisition_section(config: dict) -> None:
             type=["jpg", "jpeg", "png", "tif", "tiff"],
             accept_multiple_files=True,
         )
-        if uploads and st.button("Load image batch", type="primary"):
+        if uploads:
             samples = []
             failures = []
             for upload in uploads:
                 try:
+                    image = _decode_uploaded_image(upload.getvalue())
                     samples.append(
                         {
-                            "image": _decode_uploaded_image(upload.getvalue()),
+                            "image": image,
                             "name": upload.name,
                             "description": f"Uploaded image: {upload.name}",
                         }
                     )
                 except ValueError:
                     failures.append(upload.name)
-            _replace_input_batch(samples)
-            st.success(f"Loaded {len(samples)} image(s).")
+
+            if samples:
+                _replace_input_batch(samples)
+                st.session_state["input_images"] = [
+                    (sample["image"], sample["name"]) for sample in samples
+                ]
+                st.session_state["selected_input_index"] = 0
+                st.success(
+                    f"Loaded {len(samples)} image(s). Choose one from the selector below."
+                )
             if failures:
                 st.warning("Unreadable files skipped: " + ", ".join(failures))
-    else:
-        upload = st.file_uploader(
-            "Upload a cloud-chamber video", type=["mp4", "avi", "mov"]
-        )
-        if upload is not None:
-            _video_acquisition(upload, config)
+
+        if st.session_state.get("input_batch"):
+            names = [sample["name"] for sample in st.session_state["input_batch"]]
+            selected = st.selectbox("Select image for analysis", names)
+            index = names.index(selected)
+            st.session_state["selected_input_index"] = index
+            sample = st.session_state["input_batch"][index]
+            _set_input(sample["image"], sample["name"], sample["description"])
+        return
+
+    upload = st.file_uploader(
+        "Upload a cloud-chamber video", type=["mp4", "avi", "mov"]
+    )
+    if upload is not None:
+        _video_acquisition(upload, config)
 
     _batch_selector()
 
@@ -539,6 +568,59 @@ def _video_sample(
             f"{video_name}, frame {frame_number}, {timestamp:.2f} seconds"
         ),
     }
+
+
+def _model_page(short_name: str, full_name: str) -> None:
+    st.title(f"{short_name} Classifier")
+    st.info(
+        f"Purpose: team-member workspace for the {full_name}. This model must "
+        "use the shared dataset splits and shared processing pipeline."
+    )
+    if short_name == "CNN":
+        render_cnn_page()
+        return
+
+    module_name = short_name.lower().replace(" ", "_")
+    if short_name == "Extra Trees":
+        module_name = "extra_trees"
+    st.code(f"cloud_chamber/ml/member_models/{module_name}.py")
+    st.markdown(
+        """
+        The member implementation should provide training, validation,
+        prediction and model-saving functions. Do not duplicate or alter the
+        shared enhancement, segmentation or feature extraction stages.
+
+        This page is intentionally a placeholder until the assigned member
+        connects their completed classifier.
+        """
+    )
+    if short_name != "MLP":
+        return
+
+    st.subheader("Run the trained MLP")
+    result = st.session_state.get("pipeline_result")
+    if result is None:
+        st.warning(
+            "Process an image or video frame on the Shared Processing "
+            "Pipeline page first."
+        )
+        return
+    model_path = Path("models/mlp_classifier.joblib")
+    if not model_path.exists():
+        st.warning("Train the model first: `python scripts/train_mlp.py`")
+        return
+    confidence_threshold = st.slider(
+        "Reporting confidence threshold",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.60,
+        step=0.05,
+        help=(
+            "Predictions below this probability remain visible but are marked "
+            "Uncertain. This threshold does not retrain the model."
+        ),
+    )
+    st.caption("This page remains a stub until the member model is connected.")
 
 
 def _replace_input_batch(samples: list[dict]) -> None:

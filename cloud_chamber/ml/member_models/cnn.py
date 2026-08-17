@@ -10,10 +10,15 @@ training pipeline.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from time import perf_counter
+from typing import Any, Iterable
 
+import cv2
 import numpy as np
 
 try:
@@ -27,8 +32,22 @@ except ImportError as exc:  # pragma: no cover - dependency check for the user f
     ) from exc
 
 from cloud_chamber.config import load_config
+from cloud_chamber.features import TrackFeatures
 from cloud_chamber.ml.contour_dataset import build_feature_csv, load_feature_csv
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
+
+CLASS_COLOURS = {
+    "alpha": (0, 165, 255),
+    "electron_positron": (255, 120, 0),
+    "proton": (0, 200, 0),
+    "v_track": (180, 0, 180),
+}
+DISPLAY_NAMES = {
+    "alpha": "Alpha",
+    "electron_positron": "Electron/Positron",
+    "proton": "Proton",
+    "v_track": "V-track",
+}
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "dataset" / "external_dataset_split"
@@ -44,6 +63,15 @@ def build_class_mapping() -> dict[str, int]:
         "proton": 2,
     }
     return mapping
+
+
+def features_to_matrix(features: Iterable[TrackFeatures]) -> np.ndarray:
+    """Convert the shared contour-feature objects into the fixed CNN input matrix."""
+    rows = []
+    for track in features:
+        values = asdict(track)
+        rows.append([float(values[column]) for column in FEATURE_COLUMNS])
+    return np.asarray(rows, dtype=np.float64).reshape(-1, len(FEATURE_COLUMNS))
 
 
 class FeatureTrackCNN(nn.Module):
@@ -247,37 +275,189 @@ def predict_tracks(model: nn.Module, dataset_root: str | Path, split: str = "dev
     with torch.no_grad():
         for features, labels in loader:
             logits = model(features)
+            probabilities = torch.softmax(logits, dim=1)
             preds = logits.argmax(dim=1)
             inv_mapping = {value: key for key, value in class_mapping.items()}
-            for label, prediction in zip(labels, preds, strict=True):
-                probability = torch.softmax(logits, dim=1)
-                confidence = float(probability[0, int(prediction.item())].item())
+            for label, prediction, probability in zip(labels, preds, probabilities, strict=True):
+                confidence = float(probability[int(prediction.item())].item())
                 results.append(
                     {
                         "true_label": inv_mapping[int(label.item())],
                         "predicted_label": inv_mapping[int(prediction.item())],
                         "confidence": confidence,
+                        "probabilities": {
+                            inv_mapping[i]: float(probability[i].item())
+                            for i in range(len(probability))
+                        },
                     }
                 )
     return results
+
+
+def load_model(model_path: str | Path, num_classes: int = 3) -> dict:
+    """Load a saved CNN bundle in the same container shape used by the other model pages."""
+    path = Path(model_path)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"CNN model not found: {path}. Run python -m cloud_chamber.ml.member_models.cnn first."
+        )
+
+    payload = torch.load(path, map_location="cpu")
+    class_mapping = payload.get("class_mapping") or build_class_mapping()
+    feature_columns = payload.get("feature_columns") or FEATURE_COLUMNS
+    if tuple(feature_columns) != FEATURE_COLUMNS:
+        raise ValueError("Saved CNN uses a different feature-column contract")
+
+    model = FeatureTrackCNN(input_dim=len(FEATURE_COLUMNS), num_classes=num_classes)
+    model.load_state_dict(payload["model_state"])
+    model.eval()
+    return {
+        "model": model,
+        "feature_columns": FEATURE_COLUMNS,
+        "class_mapping": class_mapping,
+        "classes": list(class_mapping.keys()),
+    }
+
+
+def predict_tracks(model_bundle: dict, features: Iterable[TrackFeatures]) -> list[dict]:
+    """Classify segmented contours using the saved CNN and return probability-rich rows."""
+    feature_list = list(features)
+    matrix = features_to_matrix(feature_list)
+    if matrix.shape[0] == 0:
+        return []
+
+    model = model_bundle["model"]
+    model.eval()
+    tensor = torch.tensor(matrix, dtype=torch.float32)
+    with torch.no_grad():
+        logits = model(tensor)
+        probabilities = torch.softmax(logits, dim=1)
+    predictions = logits.argmax(dim=1)
+    class_mapping = model_bundle.get("class_mapping") or build_class_mapping()
+    inv_mapping = {value: key for key, value in class_mapping.items()}
+    elapsed_per_track = 0.0
+
+    return [
+        {
+            "track_id": track.track_id,
+            "predicted_class": inv_mapping[int(label.item())],
+            "particle_type": DISPLAY_NAMES.get(inv_mapping[int(label.item())], inv_mapping[int(label.item())]),
+            "confidence": float(probabilities[index, int(label.item())].item()),
+            "inference_time_ms": elapsed_per_track,
+            "probabilities": {
+                inv_mapping[i]: float(probabilities[index, i].item())
+                for i in range(probabilities.shape[1])
+            },
+        }
+        for index, (track, label) in enumerate(zip(feature_list, predictions, strict=True))
+    ]
+
+
+def summarise_predictions(predictions: list[dict], confidence_threshold: float = 0.60) -> dict:
+    """Summarise a batch of CNN predictions into a compact report."""
+    summary = {
+        "Alpha": 0,
+        "Electron/Positron": 0,
+        "Proton": 0,
+        "Uncertain": 0,
+        "Total": len(predictions),
+    }
+    for prediction in predictions:
+        particle_type = prediction["particle_type"]
+        if particle_type in summary:
+            summary[particle_type] += 1
+        if float(prediction["confidence"]) < confidence_threshold:
+            summary["Uncertain"] += 1
+    return summary
+
+
+def build_visual_report(
+    image: np.ndarray,
+    features: Iterable[TrackFeatures],
+    predictions: list[dict],
+    confidence_threshold: float = 0.60,
+) -> tuple[np.ndarray, list[dict]]:
+    """Create the annotated CNN overlay and table rows used by the GUI."""
+    feature_list = list(features)
+    if len(feature_list) != len(predictions):
+        raise ValueError("Feature and prediction counts must be equal")
+
+    overlay = image.copy()
+    rows = []
+    for track, prediction in zip(feature_list, predictions, strict=True):
+        x, y, width, height = track.bounding_box
+        confidence = float(prediction["confidence"])
+        uncertain = confidence < confidence_threshold
+        colour = (0, 255, 255) if uncertain else CLASS_COLOURS.get(
+            prediction["predicted_class"], (255, 255, 255)
+        )
+        cv2.rectangle(overlay, (x, y), (x + width, y + height), colour, 2)
+        label = (
+            f"T{track.track_id}: {prediction['particle_type']} {confidence:.0%}"
+        )
+        cv2.putText(
+            overlay,
+            label,
+            (x, max(y - 7, 16)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            colour,
+            1,
+            cv2.LINE_AA,
+        )
+        rows.append(
+            {
+                "Track": track.track_id,
+                "Particle type": prediction["particle_type"],
+                "Confidence": confidence,
+                "Status": "Uncertain" if uncertain else "Confident",
+                "X": x,
+                "Y": y,
+                "Width": width,
+                "Height": height,
+                "Inference time (ms)": prediction["inference_time_ms"],
+                **{
+                    f"P({DISPLAY_NAMES.get(name, name)})": probability
+                    for name, probability in prediction["probabilities"].items()
+                },
+            }
+        )
+    return overlay, rows
+
+
+def encode_report_png(overlay: np.ndarray) -> bytes:
+    """Encode the CNN annotation overlay to PNG bytes."""
+    success, encoded = cv2.imencode(".png", overlay)
+    if not success:
+        raise OSError("Unable to encode the CNN visual report")
+    return encoded.tobytes()
+
+
+def encode_report_csv(rows: list[dict]) -> bytes:
+    """Write rows to CSV using the same style as the other member models."""
+    if not rows:
+        return b""
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=list(rows[0]))
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue().encode("utf-8-sig")
 
 
 def save_model(model: nn.Module, model_path: str | Path, metadata: dict[str, Any] | None = None) -> Path:
     """Save a trained CNN and optional metadata for later inference."""
     path = Path(model_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"model_state": model.state_dict(), "metadata": metadata or {}}
+    class_mapping = (metadata or {}).get("class_mapping") or build_class_mapping()
+    payload = {
+        "model_state": model.state_dict(),
+        "feature_columns": FEATURE_COLUMNS,
+        "class_mapping": class_mapping,
+        "classes": list(class_mapping.keys()),
+        "metadata": metadata or {},
+    }
     torch.save(payload, path)
     return path
-
-
-def load_model(model_path: str | Path, num_classes: int = 3) -> nn.Module:
-    """Load a saved CNN."""
-    model = FeatureTrackCNN(input_dim=len(FEATURE_COLUMNS), num_classes=num_classes)
-    payload = torch.load(model_path, map_location="cpu")
-    model.load_state_dict(payload["model_state"])
-    model.eval()
-    return model
 
 
 def parse_args() -> argparse.Namespace:
@@ -304,6 +484,7 @@ def main() -> int:
     )
     model_path = save_model(result["model"], args.output, metadata={
         "class_mapping": result["class_mapping"],
+        "classes": list(result["class_mapping"].keys()),
         "history": result["history"],
         "dataset_split": result["dataset_split"],
     })
