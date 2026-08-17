@@ -12,8 +12,8 @@ import streamlit as st
 
 from cloud_chamber.config import load_config
 from cloud_chamber.calibration import (
-    calibrate_image,
     detect_chamber_corners,
+    spatial_scale,
     rectify_image,
 )
 from cloud_chamber.enhancement import enhance_image
@@ -33,6 +33,7 @@ from cloud_chamber.ui.model_pages import (
     svm_page,
 )
 from cloud_chamber.ui.model_pages.context import PageContext
+from cloud_chamber.ui.comparison_page import render as render_comparison_page
 from ui.cnn_page import render_cnn_page
 
 ROI_PROFILE_LABELS = {
@@ -75,7 +76,7 @@ def _build_page_handlers():
             "MLP", MODEL_PAGES["MLP"], config, context
         ),
         "Extra Trees": lambda _config: extra_trees_page.render(context),
-        COMPARISON_PAGE: lambda _config: _comparison_page(),
+        COMPARISON_PAGE: lambda _config: render_comparison_page(),
     }
 
 
@@ -120,6 +121,67 @@ def _shared_pipeline_page(config: dict) -> None:
     enhancement = result["enhancement"]
     segmentation = result["segmentation"]
     features = result["features"]
+    scaling = result["spatial_normalisation"]
+    st.header("Spatial scaling")
+    scaling_columns = st.columns(2)
+    scaling_columns[0].image(
+        _bgr_to_rgb(result["rectified_image"]),
+        caption=(
+            f"Rectified source: {scaling['original_width']} × "
+            f"{scaling['original_height']} pixels"
+        ),
+    )
+    scaling_columns[1].image(
+        _bgr_to_rgb(result["spatially_scaled_image"]),
+        caption=(
+            f"Spatially scaled image: {scaling['scaled_width']} × "
+            f"{scaling['scaled_height']} pixels"
+        ),
+    )
+    st.caption(
+        f"Longest side normalised to {scaling['target_longest_side']} pixels; "
+        f"scale factor = {scaling['scale']:.4f}. Scaling is performed after "
+        "rectification and before image enhancement."
+    )
+    st.subheader("Spatial-resolution selection")
+    resolution_report = Path("results/spatial_resolution_validation.json")
+    if resolution_report.exists():
+        resolution_rows = json.loads(
+            resolution_report.read_text(encoding="utf-8")
+        )
+        best_f1 = max(row["f1"] for row in resolution_rows)
+        st.dataframe(
+            [
+                {
+                    "Longest side": row["longest_side"],
+                    "Precision": round(row["precision"], 3),
+                    "Recall": round(row["recall"], 3),
+                    "F1": round(row["f1"], 3),
+                    "Mean time (ms/image)": round(
+                        row["mean_processing_ms"], 1
+                    ),
+                    "Result": (
+                        "Highest validation F1"
+                        if row["f1"] == best_f1
+                        else (
+                            "Current configured target"
+                            if row["longest_side"]
+                            == scaling["target_longest_side"]
+                            else "Candidate"
+                        )
+                    ),
+                }
+                for row in resolution_rows
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+    st.caption(
+        "Measured on 127 validation images using one-to-one IoU ≥ 0.50. "
+        "The combined result is dominated by the larger external validation "
+        "set; primary and thin-track results must also be considered before "
+        "fixing the final target."
+    )
     st.header("Grayscale conversion and Gaussian filtering")
     columns = st.columns(3)
     columns[0].image(_bgr_to_rgb(analysis_image), caption="Calibrated input")
@@ -177,89 +239,24 @@ def _shared_pipeline_page(config: dict) -> None:
 
 
 def _calibration_section(image: np.ndarray) -> dict | None:
-    """Collect an optional physical reference and perspective correction."""
-    st.header("Image calibration")
+    """Collect editable chamber corners for perspective rectification."""
+    st.header("Perspective rectification")
     height, width = image.shape[:2]
-    controls = st.columns(2)
-    spatial_enabled = controls[0].checkbox(
-        "Enable spatial calibration",
-        value=False,
-        help=(
-            "Enable this only when a real distance in the image is known. "
-            "Without a reference, measurements correctly remain in pixels."
-        ),
-    )
-    rectify = controls[1].checkbox(
-        "Apply perspective rectification",
-        value=False,
-        help=(
-            "Correct an angled rectangular chamber. This can be used without "
-            "a physical centimetre reference."
-        ),
-    )
-    if not spatial_enabled and not rectify:
-        st.caption(
-            "Calibration and rectification are disabled; geometric "
-            "measurements use pixels."
-        )
-        st.session_state["calibration_settings"] = None
-        return None
-
-    known_length_cm = None
-    reference_points = None
-    if spatial_enabled:
-        known_length_cm = st.number_input(
-            "Known reference length (cm)",
-            min_value=0.001,
-            value=1.0,
-            step=0.1,
-            format="%.3f",
-            help="Measure a visible reference object or chamber dimension.",
-        )
-        st.caption(
-            "Enter the pixel coordinates of the two endpoints of that same "
-            "reference. Coordinates start at (0, 0) in the top-left corner."
-        )
-        reference_columns = st.columns(4)
-        x1 = reference_columns[0].number_input(
-            "Reference X1", 0, width - 1, 0, key="calibration_x1"
-        )
-        y1 = reference_columns[1].number_input(
-            "Reference Y1", 0, height - 1, 0, key="calibration_y1"
-        )
-        x2 = reference_columns[2].number_input(
-            "Reference X2", 0, width - 1, width - 1, key="calibration_x2"
-        )
-        y2 = reference_columns[3].number_input(
-            "Reference Y2", 0, height - 1, 0, key="calibration_y2"
-        )
-        reference_points = [
-            (float(x1), float(y1)),
-            (float(x2), float(y2)),
-        ]
-
     rectification_points = None
-    if rectify:
+    if True:
         detected_corners = detect_chamber_corners(image)
         source_key = f"{st.session_state.get('input_name')}:{width}x{height}"
         coordinate_keys = [
             (f"rectification_x_{index}", f"rectification_y_{index}")
             for index in range(4)
         ]
-        newly_enabled = not st.session_state.get(
-            "rectification_was_enabled", False
-        )
-        if (
-            st.session_state.get("calibration_corner_source") != source_key
-            or newly_enabled
-        ):
+        if st.session_state.get("calibration_corner_source") != source_key:
             st.session_state["calibration_corner_source"] = source_key
             for point, (x_key, y_key) in zip(
                 detected_corners, coordinate_keys
             ):
                 st.session_state[x_key] = int(round(float(point[0])))
                 st.session_state[y_key] = int(round(float(point[1])))
-        st.session_state["rectification_was_enabled"] = True
 
         if st.button("Reset coordinates to automatic values"):
             for point, (x_key, y_key) in zip(
@@ -321,50 +318,25 @@ def _calibration_section(image: np.ndarray) -> dict | None:
                 2,
                 cv2.LINE_AA,
             )
-        st.image(
-            _bgr_to_rgb(corner_preview),
-            caption="Editable chamber boundary used for rectification",
-        )
-    else:
-        # The next transition from disabled to enabled must start from a fresh
-        # automatic estimate rather than values edited during an earlier run.
-        st.session_state["rectification_was_enabled"] = False
-
     settings = {
-        "spatial_enabled": spatial_enabled,
-        "known_length_cm": (
-            float(known_length_cm) if known_length_cm is not None else None
-        ),
-        "reference_points": reference_points,
         "rectification_points": rectification_points,
     }
     try:
-        if spatial_enabled:
-            preview = calibrate_image(
-                image,
-                settings["known_length_cm"],
-                settings["reference_points"],
-                settings["rectification_points"],
-            )
-            preview_image = preview.image
-            st.metric(
-                "Spatial scale",
-                f"{preview.centimetres_per_pixel:.6f} cm/pixel",
-            )
-        else:
-            preview_image = rectify_image(image, rectification_points)
+        preview_image = rectify_image(image, rectification_points)
     except ValueError as error:
         st.error(str(error))
         st.stop()
-    if rectify:
-        st.image(
-            _bgr_to_rgb(preview_image), caption="Perspective-rectified image"
-        )
-        if not spatial_enabled:
-            st.caption(
-                "Perspective was corrected, but measurements remain in pixels "
-                "because no physical reference was supplied."
-            )
+    preview_columns = st.columns(2)
+    preview_columns[0].image(
+        _bgr_to_rgb(corner_preview),
+        caption="Editable chamber boundary",
+        width=420,
+    )
+    preview_columns[1].image(
+        _bgr_to_rgb(preview_image),
+        caption="Perspective-rectified image",
+        width=420,
+    )
     st.session_state["calibration_settings"] = settings
     return settings
 
@@ -375,27 +347,28 @@ def _process_pipeline_image(
     calibration_settings: dict | None = None,
 ) -> dict:
     """Run the identical shared pipeline for one image without drawing UI."""
+    # The original orientation selects the appropriate dataset-specific ROI.
+    profile_name = _detect_layout_profile(image)
     analysis_image = image
     centimetres_per_pixel = None
     rectified = False
-    if calibration_settings:
-        if calibration_settings.get("spatial_enabled"):
-            calibration = calibrate_image(
-                image,
-                calibration_settings["known_length_cm"],
-                calibration_settings["reference_points"],
-                calibration_settings.get("rectification_points"),
-            )
-            analysis_image = calibration.image
-            centimetres_per_pixel = calibration.centimetres_per_pixel
-            rectified = calibration.rectified
-        elif calibration_settings.get("rectification_points") is not None:
-            analysis_image = rectify_image(
-                image, calibration_settings["rectification_points"]
-            )
-            rectified = True
+    if calibration_settings and calibration_settings.get(
+        "rectification_points"
+    ) is not None:
+        analysis_image = rectify_image(
+            image, calibration_settings["rectification_points"]
+        )
+        rectified = True
 
-    profile_name = _detect_layout_profile(analysis_image)
+    rectified_image = analysis_image
+    normalisation_settings = config.get("spatial_normalisation", {})
+    normalisation = spatial_scale(
+        rectified_image,
+        int(normalisation_settings.get("target_longest_side", 1920)),
+    )
+    spatially_scaled_image = normalisation.image
+    analysis_image = spatially_scaled_image
+
     selected_profile = config["segmentation"]["roi_profiles"][profile_name]
     roi_margins = {
         side: selected_profile[side]
@@ -428,12 +401,24 @@ def _process_pipeline_image(
     )
     return {
         "input_image": analysis_image,
+        "rectified_image": rectified_image,
+        "spatially_scaled_image": spatially_scaled_image,
         "enhancement": enhancement,
         "segmentation": segmentation,
         "features": features,
         "roi_profile": profile_name,
         "centimetres_per_pixel": centimetres_per_pixel,
         "rectified": rectified,
+        "spatial_normalisation": {
+            "target_longest_side": int(
+                normalisation_settings.get("target_longest_side", 1920)
+            ),
+            "scale": normalisation.scale,
+            "original_width": normalisation.original_width,
+            "original_height": normalisation.original_height,
+            "scaled_width": normalisation.scaled_width,
+            "scaled_height": normalisation.scaled_height,
+        },
     }
 
 
@@ -714,54 +699,6 @@ def _batch_selector() -> None:
 
 
 
-
-
-def _comparison_page() -> None:
-    st.title("Final Model Comparison")
-    st.info(
-        "Purpose: compare CNN, SVM, Decision Tree, MLP and Extra Trees using "
-        "the same final-test split and the same metrics."
-    )
-    st.markdown(
-        "Report per-class precision, recall and F1-score, macro F1-score, "
-        "confusion matrix and processing time. Use validation results for "
-        "model selection; use the final-test split only once after all models "
-        "and parameters are fixed."
-    )
-    report_path = Path("models/mlp_training_report.json")
-    if report_path.exists():
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        result = report["final_test"]
-        st.subheader("Available final-test results")
-        st.dataframe(
-            [
-                {
-                    "Model": "MLP",
-                    "Accuracy": result["accuracy"],
-                    "Balanced accuracy": result["balanced_accuracy"],
-                    "Macro F1": result["macro_f1"],
-                    "Weighted F1": result["weighted_f1"],
-                    "Mean time/track (ms)": result[
-                        "mean_inference_ms_per_track"
-                    ],
-                }
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(
-            "MLP confusion matrix: rows are true classes and columns are "
-            "predicted classes, in the displayed class order."
-        )
-        st.write(result["class_names"])
-        st.dataframe(result["confusion_matrix"], use_container_width=True)
-    else:
-        st.warning("The MLP report is not available. Run `python scripts/train_mlp.py`.")
-
-    st.info(
-        "Add the other four models' final-test reports here only after their "
-        "development and validation choices are fixed."
-    )
 
 
 def _feature_row(item, centimetres_per_pixel: float | None = None) -> dict:

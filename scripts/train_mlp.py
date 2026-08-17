@@ -54,6 +54,13 @@ def parse_args() -> argparse.Namespace:
         "--split-root",
         type=Path,
         default=PROJECT_ROOT / "dataset" / "external_dataset_split",
+        help="External Müller dataset split root.",
+    )
+    parser.add_argument(
+        "--primary-split-root",
+        type=Path,
+        default=PROJECT_ROOT / "dataset" / "primary_dataset_split",
+        help="Primary dataset root containing annotations_coco.json.",
     )
     parser.add_argument(
         "--feature-dir",
@@ -65,6 +72,59 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--rebuild-features", action="store_true")
     return parser.parse_args()
+
+
+def primary_split_annotations(source_path: Path, split: str) -> Path:
+    """Create a split-specific primary COCO file beside the source JSON.
+
+    Keeping the filtered file beside the original preserves its relative image
+    paths, such as ``development/images/example.jpg``.
+    """
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    image_ids = {
+        int(image["id"])
+        for image in payload.get("images", [])
+        if image.get("split") == split
+    }
+    if not image_ids:
+        raise ValueError(f"Primary dataset contains no images for split={split!r}")
+    filtered = {
+        **payload,
+        "images": [
+            image
+            for image in payload.get("images", [])
+            if int(image["id"]) in image_ids
+        ],
+        "annotations": [
+            annotation
+            for annotation in payload.get("annotations", [])
+            if int(annotation["image_id"]) in image_ids
+        ],
+    }
+    output_path = source_path.with_name(f"{split}_annotations_coco.json")
+    output_path.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
+    return output_path
+
+
+def load_or_build_features(
+    annotation_path: Path,
+    feature_path: Path,
+    config: dict,
+    allowed_labels: set[str],
+    rebuild: bool,
+    roi_profile_name: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load cached features or build them using the source-specific ROI."""
+    if rebuild or not feature_path.exists():
+        print(f"Building labelled contour features: {feature_path.name}")
+        build_segmented_feature_csv(
+            annotation_path,
+            feature_path,
+            config,
+            allowed_labels=allowed_labels,
+            roi_profile_name=roi_profile_name,
+        )
+    return load_feature_csv(feature_path, allowed_labels)
 
 
 def make_pipeline(parameters: dict, random_seed: int):
@@ -169,23 +229,50 @@ def main() -> int:
     allowed_labels = set(config["classification"]["supported_classes"])
     args.feature_dir.mkdir(parents=True, exist_ok=True)
 
+    primary_annotations = args.primary_split_root / "annotations_coco.json"
+    if not primary_annotations.is_file():
+        raise FileNotFoundError(
+            f"Primary annotation file not found: {primary_annotations}"
+        )
+
     split_tables = {}
     class_counts = {}
     for split in SPLITS:
-        feature_path = args.feature_dir / f"{split}.csv"
-        annotation_path = args.split_root / split / "annotations_coco.json"
-        if args.rebuild_features or not feature_path.exists():
-            print(f"Building labelled contour features: {split}")
-            class_counts[split] = build_segmented_feature_csv(
-                annotation_path,
-                feature_path,
-                config,
-                allowed_labels=allowed_labels,
+        external_annotations = args.split_root / split / "annotations_coco.json"
+        if not external_annotations.is_file():
+            raise FileNotFoundError(
+                f"External annotation file not found: {external_annotations}"
             )
-        matrix, labels = load_feature_csv(feature_path, allowed_labels)
+        primary_filtered = primary_split_annotations(primary_annotations, split)
+
+        external_x, external_y = load_or_build_features(
+            external_annotations,
+            args.feature_dir / f"{split}.csv",
+            config,
+            allowed_labels,
+            args.rebuild_features,
+            "external_muller",
+        )
+        primary_x, primary_y = load_or_build_features(
+            primary_filtered,
+            args.feature_dir / f"primary_{split}.csv",
+            config,
+            allowed_labels,
+            args.rebuild_features,
+            "primary_full_chamber",
+        )
+        matrix = np.concatenate((external_x, primary_x), axis=0)
+        labels = np.concatenate((external_y, primary_y), axis=0)
         split_tables[split] = (matrix, labels)
-        class_counts.setdefault(split, dict(sorted(Counter(labels).items())))
-        print(f"{split}: {len(labels)} tracks {class_counts[split]}")
+        class_counts[split] = {
+            "external": dict(sorted(Counter(external_y).items())),
+            "primary": dict(sorted(Counter(primary_y).items())),
+            "combined": dict(sorted(Counter(labels).items())),
+        }
+        print(
+            f"{split}: {len(labels)} combined tracks "
+            f"(external={len(external_y)}, primary={len(primary_y)})"
+        )
 
     development_x, development_y = split_tables["development"]
     validation_x, validation_y = split_tables["validation"]
@@ -241,7 +328,8 @@ def main() -> int:
     report = {
         "method": "StandardScaler + MLPClassifier",
         "feature_source": (
-            "automatic shared segmentation contours labelled by COCO-mask overlap"
+            "combined primary and external automatic segmentation contours "
+            "labelled by COCO-mask overlap"
         ),
         "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
         "feature_columns": FEATURE_COLUMNS,

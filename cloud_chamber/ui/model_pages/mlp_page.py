@@ -1,6 +1,7 @@
 """MLP Streamlit page and report components."""
 from pathlib import Path
 import numpy as np
+import plotly.graph_objects as go
 import streamlit as st
 import cloud_chamber.ml.member_models.svm as svm_module
 from cloud_chamber.ml.member_models.decision_tree import (build_visual_report as decision_tree_build_visual_report, encode_report_csv as decision_tree_encode_report_csv, encode_report_png as decision_tree_encode_report_png, load_model as decision_tree_load_model, predict_tracks as decision_tree_predict_tracks)
@@ -318,6 +319,12 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         hide_index=True,
     )
 
+    _render_mlp_output_charts(
+        summary=summary,
+        predictions=predictions,
+        confidence_threshold=confidence_threshold,
+    )
+
     st.subheader("Annotated classification overview")
     st.image(
         context.bgr_to_rgb(overlay),
@@ -377,6 +384,121 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         file_name=f"{safe_name}_{model_key}_report.pdf",
         mime="application/pdf",
     )
+
+
+def _render_mlp_output_charts(
+    summary: dict,
+    predictions: list[dict],
+    confidence_threshold: float,
+) -> None:
+    """Visualise complementary MLP output metrics for the current input.
+
+    These charts describe model output only. They must not be interpreted as
+    accuracy because the uploaded image does not provide ground-truth labels.
+    """
+    st.subheader("MLP output visualisations")
+    st.caption(
+        "These charts summarise the current predictions. Accuracy, precision, "
+        "recall and F1-score must be calculated separately on labelled test data."
+    )
+
+    display_colours = {
+        "Alpha": "#FFA500",
+        "Electron/Positron": "#0078FF",
+        "Proton": "#00C800",
+        "V-track": "#FF00FF",
+    }
+    class_names = list(summary["class_counts"])
+    class_counts = [summary["class_counts"][name] for name in class_names]
+
+    left, right = st.columns(2)
+    with left:
+        class_figure = go.Figure(
+            go.Pie(
+                labels=class_names,
+                values=class_counts,
+                hole=0.48,
+                marker={"colors": [display_colours[name] for name in class_names]},
+                textinfo="label+value+percent",
+                sort=False,
+            )
+        )
+        class_figure.update_layout(
+            title="Predicted particle composition",
+            margin={"l": 10, "r": 10, "t": 55, "b": 10},
+            legend_title_text="Particle type",
+        )
+        st.plotly_chart(class_figure, use_container_width=True)
+
+    with right:
+        status_figure = go.Figure()
+        status_figure.add_bar(
+            y=["Detected tracks"],
+            x=[summary["confident_classifications"]],
+            name="Reliable candidate",
+            orientation="h",
+            marker_color="#2ECC71",
+            text=[summary["confident_classifications"]],
+            textposition="inside",
+        )
+        status_figure.add_bar(
+            y=["Detected tracks"],
+            x=[summary["uncertain_classifications"]],
+            name="Uncertain",
+            orientation="h",
+            marker_color="#FFD700",
+            text=[summary["uncertain_classifications"]],
+            textposition="inside",
+        )
+        status_figure.update_layout(
+            title=f"Reporting status at {confidence_threshold:.0%} confidence",
+            barmode="stack",
+            xaxis_title="Number of tracks",
+            margin={"l": 10, "r": 10, "t": 55, "b": 10},
+        )
+        st.plotly_chart(status_figure, use_container_width=True)
+
+    track_labels = [f"T{index + 1}" for index in range(len(predictions))]
+    confidences = [float(item["confidence"]) for item in predictions]
+    particle_types = [str(item["particle_type"]) for item in predictions]
+    confidence_colours = [
+        display_colours.get(particle_type, "#A0A0A0")
+        if confidence >= confidence_threshold
+        else "#FFD700"
+        for particle_type, confidence in zip(
+            particle_types, confidences, strict=True
+        )
+    ]
+    confidence_figure = go.Figure(
+        go.Bar(
+            x=track_labels,
+            y=confidences,
+            marker_color=confidence_colours,
+            customdata=particle_types,
+            text=[f"{value:.0%}" for value in confidences],
+            textposition="outside",
+            hovertemplate=(
+                "Track: %{x}<br>Prediction: %{customdata}<br>"
+                "Confidence: %{y:.1%}<extra></extra>"
+            ),
+        )
+    )
+    confidence_figure.add_hline(
+        y=confidence_threshold,
+        line_dash="dash",
+        line_color="#FF4B4B",
+        annotation_text=f"Reporting threshold ({confidence_threshold:.0%})",
+        annotation_position="top left",
+    )
+    confidence_figure.update_layout(
+        title="Confidence for each detected track",
+        xaxis_title="Track ID",
+        yaxis_title="MLP confidence",
+        yaxis={"range": [0, 1.08], "tickformat": ".0%"},
+        margin={"l": 10, "r": 10, "t": 60, "b": 10},
+        showlegend=False,
+    )
+    st.plotly_chart(confidence_figure, use_container_width=True)
 
 
 def _render_particle_evidence(

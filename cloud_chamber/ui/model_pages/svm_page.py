@@ -37,7 +37,7 @@ RGB_COLORS = {
     "alpha": "#FFA500",            # BGR: (0, 165, 255) -> RGB: (255, 165, 0)
     "electron_positron": "#0078FF", # BGR: (255, 120, 0) -> RGB: (0, 120, 255)
     "proton": "#00C800",           # BGR: (0, 200, 0) -> RGB: (0, 200, 0)
-    "v_track": "#B400B4"           # BGR: (180, 0, 180) -> RGB: (180, 0, 180)
+    "v_track": "#FF00FF"           # Bright magenta improves visibility on dark chamber images.
 }
 
 

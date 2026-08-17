@@ -53,7 +53,7 @@ CLASS_COLOURS = {
     "alpha": (0, 165, 255),
     "electron_positron": (255, 120, 0),
     "proton": (0, 200, 0),
-    "v_track": (180, 0, 180),
+    "v_track": (255, 0, 255),
 }
 DISPLAY_NAMES = {
     "alpha": "Alpha",

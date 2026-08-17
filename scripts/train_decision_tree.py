@@ -1,10 +1,8 @@
 """Train, validate and save the contour-feature Decision Tree classifier.
 
-This script is intentionally explicit about the dataset sources. The training
-set is the union of the primary and external development splits, so the model is
-fit on both dataset>primary_dataset_split>development and
-dataset>external_dataset_split>development before validation is used to select
-its parameter candidate.
+All compared classifiers use the same external development, validation and
+final-test contour tables. This prevents a misleading comparison caused by a
+different feature extractor or a different number of final-test tracks.
 """
 
 from __future__ import annotations
@@ -22,65 +20,33 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cloud_chamber.config import load_config
-from cloud_chamber.ml.contour_dataset import build_feature_csv, load_feature_csv
+from cloud_chamber.ml.contour_dataset import (
+    build_segmented_feature_csv,
+    load_feature_csv,
+)
 from cloud_chamber.ml.member_models.decision_tree import (
     PARAMETER_CANDIDATES,
     build_training_report,
-    combine_feature_tables,
     evaluate,
     save_model,
     train_candidates,
 )
 
-def primary_development_annotations(
-    source_annotations: Path,
-    split_name: str,
-) -> Path:
-    """Return a temporary filtered COCO JSON if needed, otherwise the original path."""
-    with source_annotations.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-
-    image_ids = {
-        int(image["id"])
-        for image in payload.get("images", [])
-        if image.get("split") == split_name
-    }
-    if not image_ids:
-        raise ValueError(f"No images in {source_annotations} for split={split_name!r}")
-
-    filtered = {
-        **payload,
-        "images": [
-            image for image in payload.get("images", []) if int(image["id"]) in image_ids
-        ],
-        "annotations": [
-            annotation
-            for annotation in payload.get("annotations", [])
-            if int(annotation["image_id"]) in image_ids
-        ],
-    }
-    temp_path = source_annotations.with_name(f"{split_name}_annotations_coco.json")
-    temp_path.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
-    return temp_path
+SPLITS = ("development", "validation", "final_test")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train contour-feature Decision Tree")
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "config.yaml")
     parser.add_argument(
-        "--primary-split-root",
-        type=Path,
-        default=PROJECT_ROOT / "dataset" / "primary_dataset_split",
-    )
-    parser.add_argument(
-        "--external-split-root",
+        "--split-root",
         type=Path,
         default=PROJECT_ROOT / "dataset" / "external_dataset_split",
     )
     parser.add_argument(
         "--feature-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "features" / "decision_tree",
+        default=PROJECT_ROOT / "data" / "features" / "muller",
     )
     parser.add_argument(
         "--output",
@@ -102,10 +68,10 @@ def load_feature_table(
     """Build a feature CSV if needed and return its matrix and labels."""
     if rebuild_features or not feature_path.exists():
         print(f"Building labelled contour features: {annotation_path}")
-        build_feature_csv(
+        build_segmented_feature_csv(
             annotation_path,
             feature_path,
-            config["enhancement"],
+            config,
             allowed_labels=allowed_labels,
         )
     matrix, labels = load_feature_csv(feature_path, allowed_labels)
@@ -119,78 +85,28 @@ def main() -> int:
     allowed_labels = set(config["classification"]["supported_classes"])
     args.feature_dir.mkdir(parents=True, exist_ok=True)
 
-    primary_annotations = args.primary_split_root / "annotations_coco.json"
-    external_development = args.external_split_root / "development" / "annotations_coco.json"
-    external_validation = args.external_split_root / "validation" / "annotations_coco.json"
-    external_final_test = args.external_split_root / "final_test" / "annotations_coco.json"
+    split_tables = {}
+    class_counts = {}
+    for split in SPLITS:
+        annotation_path = args.split_root / split / "annotations_coco.json"
+        if not annotation_path.is_file():
+            raise FileNotFoundError(
+                f"Required dataset annotation file not found: {annotation_path}"
+            )
+        matrix, labels = load_feature_table(
+            annotation_path,
+            args.feature_dir / f"{split}.csv",
+            allowed_labels,
+            rebuild_features=args.rebuild_features,
+            config=config,
+        )
+        split_tables[split] = (matrix, labels)
+        class_counts[split] = dict(sorted(Counter(labels).items()))
+        print(f"{split}: {len(labels)} tracks {class_counts[split]}")
 
-    for required in (
-        primary_annotations,
-        external_development,
-        external_validation,
-        external_final_test,
-    ):
-        if not required.is_file():
-            raise FileNotFoundError(f"Required dataset annotation file not found: {required}")
-
-    primary_development = primary_development_annotations(
-        primary_annotations,
-        "development",
-    )
-
-    primary_dev_matrix, primary_dev_labels = load_feature_table(
-        primary_development,
-        args.feature_dir / "primary_development.csv",
-        allowed_labels,
-        rebuild_features=args.rebuild_features,
-        config=config,
-    )
-    external_dev_matrix, external_dev_labels = load_feature_table(
-        external_development,
-        args.feature_dir / "external_development.csv",
-        allowed_labels,
-        rebuild_features=args.rebuild_features,
-        config=config,
-    )
-    validation_matrix, validation_labels = load_feature_table(
-        external_validation,
-        args.feature_dir / "external_validation.csv",
-        allowed_labels,
-        rebuild_features=args.rebuild_features,
-        config=config,
-    )
-    final_test_matrix, final_test_labels = load_feature_table(
-        external_final_test,
-        args.feature_dir / "external_final_test.csv",
-        allowed_labels,
-        rebuild_features=args.rebuild_features,
-        config=config,
-    )
-
-    development_x, development_y = combine_feature_tables(
-        [
-            (primary_dev_matrix, primary_dev_labels),
-            (external_dev_matrix, external_dev_labels),
-        ]
-    )
-    class_counts = {
-        "primary_development": dict(sorted(Counter(primary_dev_labels).items())),
-        "external_development": dict(sorted(Counter(external_dev_labels).items())),
-        "development": dict(sorted(Counter(development_y).items())),
-        "validation": dict(sorted(Counter(validation_labels).items())),
-        "final_test": dict(sorted(Counter(final_test_labels).items())),
-    }
-
-    print(
-        "Training split: primary_dataset_split/development + "
-        "external_dataset_split/development"
-    )
-    print(
-        f"development rows={len(development_y)} "
-        f"primary={len(primary_dev_labels)} external={len(external_dev_labels)}"
-    )
-    print(f"validation rows={len(validation_labels)}")
-    print(f"final_test rows={len(final_test_labels)}")
+    development_x, development_y = split_tables["development"]
+    validation_matrix, validation_labels = split_tables["validation"]
+    final_test_matrix, final_test_labels = split_tables["final_test"]
 
     candidates, best_index, best_model = train_candidates(
         development_x,

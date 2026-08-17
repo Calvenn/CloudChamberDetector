@@ -12,6 +12,7 @@ import numpy as np
 
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
+from cloud_chamber.calibration import spatial_scale
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
 from cloud_chamber.segmentation import segment_tracks
 
@@ -57,6 +58,15 @@ def annotation_to_mask(annotation: dict, image_shape: tuple[int, int]) -> np.nda
     return mask
 
 
+def _normalise_mask(mask: np.ndarray, normalisation) -> np.ndarray:
+    """Apply an image's spatial-normalisation transform to its label mask."""
+    return cv2.resize(
+        mask,
+        (normalisation.scaled_width, normalisation.scaled_height),
+        interpolation=cv2.INTER_NEAREST,
+    )
+
+
 def build_feature_csv(
     annotation_path: str | Path,
     output_path: str | Path,
@@ -80,10 +90,15 @@ def build_feature_csv(
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(f"Cannot read linked image: {image_path}")
-        enhanced = enhance_image(image, enhancement_settings).enhanced
+        source_shape = image.shape
+        normalisation = spatial_scale(image, 1920)
+        enhanced = enhance_image(
+            normalisation.image, enhancement_settings
+        ).enhanced
 
         for annotation in annotations:
-            mask = annotation_to_mask(annotation, image.shape)
+            mask = annotation_to_mask(annotation, source_shape)
+            mask = _normalise_mask(mask, normalisation)
             measured = extract_track_features(mask, enhanced, minimum_area=1.0)
             if not measured:
                 continue
@@ -119,6 +134,7 @@ def build_segmented_feature_csv(
     config: dict,
     allowed_labels: set[str] | None = None,
     minimum_label_overlap: float = 0.5,
+    roi_profile_name: str = "external_muller",
 ) -> dict[str, int]:
     """Build labelled features from automatic contours, not perfect masks.
 
@@ -137,11 +153,20 @@ def build_segmented_feature_csv(
         if allowed_labels is None or label in allowed_labels:
             grouped[int(annotation["image_id"])].append(annotation)
 
-    profile = config["segmentation"]["roi_profiles"]["external_muller"]
-    margins = {side: profile[side] for side in ("left", "right", "top", "bottom")}
+    profiles = config["segmentation"]["roi_profiles"]
+    if roi_profile_name not in profiles:
+        raise ValueError(f"Unknown segmentation ROI profile: {roi_profile_name}")
+    profile = profiles[roi_profile_name]
+    source_margins = {
+        side: profile[side] for side in ("left", "right", "top", "bottom")
+    }
     segmentation_settings = {
         **config["segmentation"],
-        **{name: value for name, value in profile.items() if name not in margins},
+        **{
+            name: value
+            for name, value in profile.items()
+            if name not in source_margins
+        },
     }
     feature_minimum_area = float(segmentation_settings["minimum_object_area"])
     if segmentation_settings.get("enable_thin_track_rule", True):
@@ -158,6 +183,14 @@ def build_segmented_feature_csv(
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(f"Cannot read linked image: {image_path}")
+        source_image_shape = image.shape[:2]
+        normalisation_settings = config.get("spatial_normalisation", {})
+        normalisation = spatial_scale(
+            image,
+            int(normalisation_settings.get("target_longest_side", 1920)),
+        )
+        image = normalisation.image
+        margins = source_margins
         enhanced = enhance_image(image, config["enhancement"])
         segmented = segment_tracks(
             enhanced.enhanced, segmentation_settings, margins
@@ -174,7 +207,10 @@ def build_segmented_feature_csv(
         labelled_masks = [
             (
                 annotation,
-                decode_uncompressed_rle(annotation["segmentation"]) > 0,
+                _normalise_mask(
+                    annotation_to_mask(annotation, source_image_shape),
+                    normalisation,
+                ) > 0,
             )
             for annotation in annotations
         ]

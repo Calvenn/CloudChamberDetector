@@ -19,6 +19,51 @@ class CalibrationResult:
     rectified: bool
 
 
+@dataclass(frozen=True)
+class SpatialScalingResult:
+    """Aspect-ratio-preserving image and spatial scaling metadata."""
+
+    image: np.ndarray
+    scale: float
+    original_width: int
+    original_height: int
+    scaled_width: int
+    scaled_height: int
+
+
+def spatial_scale(
+    image: np.ndarray,
+    target_longest_side: int = 1920,
+) -> SpatialScalingResult:
+    """Scale the longest side without cropping, padding or distortion."""
+    if image is None or image.size == 0:
+        raise ValueError("Spatial-normalisation input image is empty")
+    if target_longest_side < 2:
+        raise ValueError("Target longest side must exceed one pixel")
+
+    source_height, source_width = image.shape[:2]
+    scale = float(target_longest_side) / max(source_width, source_height)
+    scaled_width = max(1, int(round(source_width * scale)))
+    scaled_height = max(1, int(round(source_height * scale)))
+    if (scaled_width, scaled_height) == (source_width, source_height):
+        scaled = image.copy()
+    else:
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+        scaled = cv2.resize(
+            image, (scaled_width, scaled_height), interpolation=interpolation
+        )
+    return SpatialScalingResult(
+        image=scaled,
+        scale=float(scale),
+        original_width=source_width,
+        original_height=source_height,
+        scaled_width=scaled_width,
+        scaled_height=scaled_height,
+    )
+
+
+
+
 def detect_chamber_corners(image: np.ndarray) -> np.ndarray:
     """Estimate the largest chamber-like quadrilateral in an image.
 
@@ -55,20 +100,12 @@ def detect_chamber_corners(image: np.ndarray) -> np.ndarray:
         if len(polygon) == 4 and cv2.isContourConvex(polygon):
             candidates.append((area, polygon.reshape(4, 2).astype(np.float32)))
     if not candidates:
-        # Primary frames use a stable portrait acquisition layout whose inner
-        # chamber limits were already validated for segmentation. When noisy
-        # droplets break the chamber edge into many contours, use those known
-        # proportional limits rather than pretending a random small contour is
-        # the chamber. Landscape Muller images are already supplied cropped.
+        # A failed detection must not silently crop the image. Default to the
+        # complete field of view; users can refine these safe coordinates with
+        # the existing manual rectification controls when correction is needed.
         height, width = image.shape[:2]
-        if height > width:
-            left = 0.06 * width
-            right = 0.94 * width
-            top = 0.07 * height
-            bottom = 0.88 * height
-        else:
-            left, right = 0.0, float(width - 1)
-            top, bottom = 0.0, float(height - 1)
+        left, right = 0.0, float(width - 1)
+        top, bottom = 0.0, float(height - 1)
         return np.asarray(
             [
                 [left, top],

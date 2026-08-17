@@ -44,6 +44,12 @@ enhancement:
   gaussian_kernel: 7
   gaussian_sigma: 1.4
 
+# The longest image dimension is scaled to 1920 before enhancement. Aspect
+# ratio, orientation and the complete field of view are retained without
+# cropping, stretching, padding or letterboxing.
+spatial_normalisation:
+  target_longest_side: 1920
+
 segmentation:
   threshold_method: white_tophat_otsu
   # White top-hat is a morphological operation that suppresses slowly varying
@@ -79,36 +85,40 @@ segmentation:
       # droplets and a 3x3 close to reconnect short gaps without merging
       # separate tracks into the very large boxes produced by a 15x15 close.
       threshold_offset: 24
+      # External images scale from a 1312-pixel longest side to 1920
+      # (s=1.463). Spatial kernels and contour limits are adjusted to retain
+      # approximately the same relative meaning at the common resolution.
+      top_hat_kernel: 61
       # Otsu+24 supplies reliable seeds. Connected pixels down to Otsu+8 are
       # retained only when their component contains at least three seed pixels.
       # This raised validation recall from 39.0% to 46.1% and gave the highest
       # tested object F1 (0.459); lower thresholds added more false regions.
       hysteresis_low_threshold_offset: 8
       hysteresis_seed_pixels: 3
-      closing_kernel: 3
+      closing_kernel: 5
       # A five-pixel line close raised labelled-instance recall from 38.8% to
       # 43.2% and gave the best tested object F1 (0.431). Longer lines created
       # progressively more false joins.
-      directional_closing_length: 5
+      directional_closing_length: 7
       # Accepted elongated contours separated by a short collinear gap are
       # connected before final contour extraction, producing one box/feature.
       # Of 0, 10, 20, 30 and 40 pixels, 40 produced the best validation F1.
-      alignment_merge_gap: 40
+      alignment_merge_gap: 59
       alignment_merge_angle: 25
       alignment_merge_minimum_aspect: 2.5
       # Compact/general candidates need stronger evidence. Validation raised
       # object precision from 43.0% to 52.2%, while the separate thin rule
       # below keeps its much smaller thresholds.
-      minimum_object_area: 160
-      minimum_major_axis: 35
+      minimum_object_area: 343
+      minimum_major_axis: 51
       # A compact small region is rejected. A small region is retained only
       # when its length and 3:1 elongation make it consistent with a thin
       # electron-like track. These values gave the highest one-to-one object
       # F1 (0.427) across all 108 Müller validation images tested.
       enable_thin_track_rule: true
-      minimum_thin_area: 30
-      minimum_thin_perimeter: 35
-      minimum_thin_major_axis: 20
+      minimum_thin_area: 64
+      minimum_thin_perimeter: 51
+      minimum_thin_major_axis: 29
       minimum_thin_aspect_ratio: 3.0
     primary_full_chamber:
       # Excludes the bright chamber walls in the fixed primary-camera layout.
@@ -117,7 +127,10 @@ segmentation:
       top: 0.07
       bottom: 0.12
       # Selected by one-to-one box F1 on the primary validation split.
+      # Primary images already have a 1920-pixel longest side, so their
+      # validated native-resolution parameters remain unchanged.
       threshold_offset: 40
+      top_hat_kernel: 41
       closing_kernel: 3
       minimum_object_area: 200
       minimum_major_axis: 40
