@@ -1,4 +1,4 @@
-"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
+﻿"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
 
 from __future__ import annotations
 
@@ -91,13 +91,18 @@ def _initialise_state() -> None:
     st.session_state.setdefault("cnn_predictions", None)
     st.session_state.setdefault("svm_predictions", None)
     st.session_state.setdefault("extra_trees_predictions", None)
+    st.session_state.setdefault("decision_tree_predictions", None)
     st.session_state.setdefault(
         "layout_choice", "Auto-detect from image shape (recommended)"
     )
     st.session_state.setdefault("mlp_quality", None)
+    st.session_state.setdefault("decision_tree_quality", None)
     st.session_state.setdefault("batch_reports", {})
     st.session_state.setdefault("mlp_batch_results", {})
+    st.session_state.setdefault("decision_tree_batch_results", {})
+    st.session_state.setdefault("svm_batch_results", {})
     st.session_state.setdefault("calibration_settings", None)
+    st.session_state.setdefault("config", None)
 
 
 def _shared_pipeline_page(config: dict) -> None:
@@ -144,6 +149,11 @@ def _shared_pipeline_page(config: dict) -> None:
     st.session_state["mlp_predictions"] = None
     st.session_state["cnn_predictions"] = None
     st.session_state["mlp_quality"] = None
+    st.session_state["decision_tree_predictions"] = None
+    st.session_state["decision_tree_quality"] = None
+    st.session_state["svm_predictions"] = None
+    st.session_state["svm_quality"] = None
+    st.session_state["extra_trees_predictions"] = None
     st.session_state["batch_reports"].pop(
         st.session_state.get("input_name"), None
     )
