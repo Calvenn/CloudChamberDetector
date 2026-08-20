@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import textwrap
 from collections import Counter
 from datetime import datetime
 from typing import Any, Iterable
@@ -298,6 +299,23 @@ def encode_pdf_report(
             warning = quality["warnings"][0] if quality["warnings"] else "No major quality warning."
             draw.text((margin + 20, y), warning[:150], fill="black", font=font)
             y += 32
+        pages.append(page)
+
+    field_guide = report.get("field_guide", [])
+    if field_guide:
+        page = Image.new("RGB", page_size, "white")
+        draw = ImageDraw.Draw(page)
+        draw.text((margin, margin), "How to Read This Report", fill="black", font=font)
+        y = margin + 38
+        for item in field_guide:
+            heading = str(item.get("field", ""))
+            description = str(item.get("description", ""))
+            draw.text((margin, y), heading, fill="black", font=font)
+            y += 20
+            for line in textwrap.wrap(description, width=135) or [""]:
+                draw.text((margin + 20, y), line, fill="black", font=font)
+                y += 17
+            y += 12
         pages.append(page)
 
     output = io.BytesIO()

@@ -1,4 +1,4 @@
-﻿"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
+"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
 
 from __future__ import annotations
 
@@ -8,12 +8,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pandas as pd
 import streamlit as st
 
 from cloud_chamber.config import load_config
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
 from cloud_chamber.ml.member_models.extra_trees import (
+    EXTRA_TREES_CLASS_COLOURS,
     build_visual_report as build_extra_trees_visual_report,
     encode_report_csv as encode_extra_trees_report_csv,
     encode_report_png as encode_extra_trees_report_png,
@@ -47,6 +49,7 @@ MODEL_PAGES = {
     "Extra Trees": "Extremely Randomised Trees",
 }
 PAGES = ["Shared Processing Pipeline", *MODEL_PAGES, "Final Model Comparison"]
+ROI_PROFILE_LABELS = ("Auto-detect from image shape (recommended)",)
 
 
 def main() -> None:
@@ -90,8 +93,11 @@ def _initialise_state() -> None:
             "Auto-detect from image shape (recommended)"
         )
     st.session_state.setdefault("mlp_quality", None)
+    st.session_state.setdefault("extra_trees_quality", None)
     st.session_state.setdefault("batch_reports", {})
     st.session_state.setdefault("mlp_batch_results", {})
+    st.session_state.setdefault("extra_trees_batch_results", {})
+    st.session_state.setdefault("extra_trees_batch_reports", {})
 
 
 def _shared_pipeline_page(config: dict) -> None:
@@ -325,6 +331,8 @@ def _replace_input_batch(samples: list[dict]) -> None:
     st.session_state["input_batch"] = samples
     st.session_state["mlp_batch_results"] = {}
     st.session_state["batch_reports"] = {}
+    st.session_state["extra_trees_batch_results"] = {}
+    st.session_state["extra_trees_batch_reports"] = {}
     if samples:
         first = samples[0]
         _set_input(first["image"], first["name"], first["description"])
@@ -632,8 +640,8 @@ def _model_page(short_name: str, full_name: str, config: dict) -> None:
         _bgr_to_rgb(overlay),
     )
     st.markdown(
-        "**Legend:** 🟧 Alpha · 🟦 Electron/Positron · 🟩 Proton · "
-        "🟪 V-track · 🟨 Uncertain · Grey dashed: review segmentation"
+        "**Legend:** Orange = Alpha | Blue = Electron/Positron | Green = Proton | "
+        "Purple = V-track | Yellow = Uncertain | Grey Dashed = Low Quality (Review Segmentation)"
     )
     st.dataframe(report_rows, use_container_width=True, hide_index=True)
 
@@ -692,6 +700,7 @@ def _render_particle_evidence(
     predictions: list[dict],
     quality_assessments: list[dict],
     confidence_threshold: float,
+    expand_cards: bool = True,
 ) -> None:
     st.subheader("Particle evidence cards")
     items_per_page = 10
@@ -721,7 +730,14 @@ def _render_particle_evidence(
             f"T{track.track_id} — {prediction['particle_type']} "
             f"({prediction['confidence']:.0%}) — {decision}"
         )
-        with st.expander(title, expanded=False):
+        card = (
+            st.expander(title, expanded=False)
+            if expand_cards
+            else st.container(border=True)
+        )
+        with card:
+            if not expand_cards:
+                st.markdown(f"**{title}**")
             x, y, width, height = track.bounding_box
             padding = 10
             left = max(0, x - padding)
@@ -778,8 +794,8 @@ def _extra_trees_page() -> None:
     st.title("Extra Trees Classifier")
 
     st.write(
-        "Extra Trees classifies each detected particle track as "
-        "**Alpha**, **Electron/Positron**, or **Proton**."
+        "Extra Trees analyses the detected particle tracks and predicts the "
+        "particle type for each track."
     )
 
     project_root = Path(__file__).resolve().parent
@@ -801,8 +817,6 @@ def _extra_trees_page() -> None:
     # 1. MODEL STATUS
     # =====================================================
 
-    st.header("1. Model Status")
-
     if not model_path.exists():
 
         st.warning(
@@ -814,11 +828,6 @@ def _extra_trees_page() -> None:
         )
 
         return
-
-
-    st.success(
-        "Extra Trees model is trained and ready."
-    )
 
 
     # =====================================================
@@ -844,7 +853,7 @@ def _extra_trees_page() -> None:
         )
 
 
-        st.header("2. Model Performance")
+        st.header("Model Performance")
 
 
         # -------------------------------------------------
@@ -874,16 +883,13 @@ def _extra_trees_page() -> None:
 
         if selected_candidate:
 
-            st.success(
-                "Selected Extra Trees configuration: "
-                f"**{selected_candidate['name']}**"
-            )
+            st.write(f"Selected model: **{selected_candidate['name']}**")
 
 
         st.caption(
-            "Validation Macro F1 is used to choose the best Extra Trees "
-            "configuration. The final-test results show the performance "
-            "of the selected model on unseen test data."
+            "Validation Macro F1 was used to select the Extra Trees "
+            "configuration. Final-test results measure performance on unseen "
+            "test data."
         )
 
 
@@ -892,12 +898,32 @@ def _extra_trees_page() -> None:
         # =================================================
 
         with st.expander(
-            "View Model Tuning and Explanation"
+            "View model training details"
         ):
-
-            st.subheader(
-                "Extra Trees Candidate Comparison"
+            st.info(
+                "Beginner summary: several Extra Trees settings were tested. "
+                "The application kept the setting that classified all particle "
+                "types most consistently on validation data."
             )
+
+            if selected_candidate:
+                st.subheader("Setting chosen by validation")
+                detail_columns = st.columns(3)
+                detail_columns[0].metric(
+                    "Number of trees", selected_candidate.get("n_estimators", "-")
+                )
+                detail_columns[1].metric(
+                    "Maximum tree depth",
+                    selected_candidate.get("max_depth") or "No limit",
+                )
+                detail_columns[2].metric(
+                    "Minimum samples to split",
+                    selected_candidate.get("min_samples_split", "-"),
+                )
+                st.caption(
+                    "You do not need to adjust these values when classifying an "
+                    "image. They were chosen automatically during training."
+                )
 
             tuning_rows = []
 
@@ -926,11 +952,20 @@ def _extra_trees_page() -> None:
                             (
                                 "Unlimited"
                                 if candidate["max_depth"] is None
-                                else candidate["max_depth"]
+                                else str(candidate["max_depth"])
                             ),
+
+                        "Max Features":
+                            candidate.get("max_features", "Default"),
+
+                        "Min Split":
+                            candidate.get("min_samples_split", 2),
 
                         "Min Leaf":
                             candidate["min_samples_leaf"],
+
+                        "Criterion":
+                            candidate.get("criterion", "gini"),
 
                         "Class Weight":
                             (
@@ -955,679 +990,763 @@ def _extra_trees_page() -> None:
                 )
 
 
-            st.dataframe(
-                tuning_rows,
-                use_container_width=True,
-                hide_index=True,
+            show_candidates = st.checkbox(
+                "Show every tested training setting",
+                key="extra_trees_show_training_candidates",
             )
-
-
-            st.caption(
-                "The configuration with the highest Validation Macro F1 "
-                "is automatically selected."
-            )
-
-
-            # ---------------------------------------------
-            # Explain Model A
-            # ---------------------------------------------
-
-            st.subheader(
-                "What Does Each Model Mean?"
-            )
-
-
-            st.markdown(
-                """
-### Model A - Baseline
-
-This is the **basic Extra Trees configuration** used as the starting
-point for comparison.
-
-- **100 trees**
-- No class balancing
-- Unlimited tree depth
-- Minimum leaf size of 1
-
-It provides a baseline result before additional tuning is applied.
-
-
-### Model B - Balanced 300
-
-This configuration increases the number of trees and introduces
-**class balancing**.
-
-- **300 trees**
-- Balanced class weights
-- Unlimited tree depth
-- Minimum leaf size of 1
-
-Class balancing gives more importance to particle classes with fewer
-training samples.
-
-
-### Model C - Balanced 500 Depth 20
-
-This configuration uses more trees while limiting how deep each tree
-can grow.
-
-- **500 trees**
-- Balanced class weights
-- Maximum tree depth of **20**
-- Minimum leaf size of 1
-
-The depth limit controls model complexity and may help reduce
-overfitting.
-
-
-### Model D - Balanced 500 Leaf 2
-
-This configuration adds another restriction to make individual trees
-more conservative.
-
-- **500 trees**
-- Balanced class weights
-- Maximum tree depth of **20**
-- Minimum leaf size of **2**
-
-A larger minimum leaf size prevents a tree from creating leaves based
-on only one training sample and may help reduce overfitting.
-"""
-            )
-
-
-            # ---------------------------------------------
-            # Explain parameters
-            # ---------------------------------------------
-
-            with st.expander(
-                "What Do the Extra Trees Settings Mean?"
-            ):
-
-                st.markdown(
-                    """
-**Number of Trees**  
-Controls how many decision trees are created. More trees can provide
-more stable predictions but require more computation.
-
-**Class Weight**  
-Controls the importance given to each particle class. Balanced class
-weights give additional importance to classes with fewer training
-samples.
-
-**Maximum Depth**  
-Controls how deep an individual tree can grow. Limiting the depth can
-reduce model complexity.
-
-**Minimum Leaf Size**  
-Controls the minimum number of training samples required in a final
-tree leaf. A larger value makes the tree more conservative.
-
-**Validation Macro F1**  
-Measures classification performance while giving equal importance to
-each particle class. The candidate with the highest Validation Macro F1
-is selected.
-"""
+            if show_candidates:
+                st.subheader("All tested training settings")
+                st.dataframe(
+                    tuning_rows,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption(
+                    "The row marked Yes achieved the highest Validation Macro "
+                    "F1 and was selected automatically."
                 )
 
+            selected_parameters = training_report.get("parameters")
+            show_parameters = st.checkbox(
+                "Show all technical model parameters",
+                key="extra_trees_show_training_parameters",
+            )
+            if selected_parameters and show_parameters:
+                st.json(selected_parameters)
+
 
     # =====================================================
-    # 3. CLASSIFY CURRENT IMAGE
+    # 3. CLASSIFY IMAGE OR BATCH (INCLUDING VIDEO FRAMES)
     # =====================================================
 
-    st.header(
-        "3. Classify Current Image"
-    )
+    st.header("Classify Input")
 
+    config = load_config()
 
-    result = st.session_state.get(
-        "pipeline_result"
-    )
+    result = st.session_state.get("pipeline_result")
+    image = st.session_state.get("input_image")
 
-    image = st.session_state.get(
-        "input_image"
-    )
-
-
-    if result is None or image is None:
-
+    if result is None and not st.session_state.get("input_batch"):
         st.info(
-            "Go to **Shared Processing Pipeline**, upload an image "
+            "Go to **Shared Processing Pipeline**, upload an image or video, "
             "and process it first."
         )
-
         return
 
-
-    features = result["features"]
-
-
-    if not features:
-
+    model_bundle = load_extra_trees_model(model_path)
+    supported_classes = tuple(config["classification"]["supported_classes"])
+    model_classes = tuple(str(value) for value in model_bundle["classes"])
+    if set(model_classes) != set(supported_classes):
         st.warning(
-            "No particle tracks were detected in this image."
+            "The trained Extra Trees classes do not match the configured "
+            "supported classes. Results below retain the trained model's "
+            "classes; retrain only after confirming the intended taxonomy."
         )
 
-        return
+    # Keep beginner reporting consistent without exposing an extra control.
+    confidence_threshold = 0.50
 
-
-    st.write(
-        f"Detected tracks: **{len(features)}**"
-    )
-
-
-    if st.button(
-        "Classify Tracks",
-        type="primary",
-    ):
-
-        model = load_extra_trees_model(
-            model_path
-        )
-
-
-        predictions = predict_extra_trees_tracks(
-            model,
-            features,
-        )
-
-
-        st.session_state[
-            "extra_trees_predictions"
-        ] = predictions
-
-
-    predictions = st.session_state.get(
-        "extra_trees_predictions"
-    )
-
-
-    if predictions is None:
-
-        st.caption(
-            "Click **Classify Tracks** to start Extra Trees classification."
-        )
-
-        return
-
-
-    if not predictions:
-
-        st.warning(
-            "No segmented track is available for classification."
-        )
-
-        return
-
-
-    # Fixed confidence threshold
-    confidence_threshold = 0.60
-
-
-    classified_image, report_rows = (
-        build_extra_trees_visual_report(
-            image,
-            features,
-            predictions,
-            confidence_threshold,
-        )
-    )
-
-
-    # =====================================================
-    # 4. CLASSIFICATION RESULT
-    # =====================================================
-
-    st.header(
-        "4. Classification Result"
-    )
-
-
-    summary = summarise_extra_trees_predictions(
-        predictions,
-        confidence_threshold,
-    )
-
-
-    # -----------------------------------------------------
-    # Particle counts
-    # -----------------------------------------------------
-
-    count_columns = st.columns(4)
-
-
-    count_columns[0].metric(
-        "Alpha",
-        summary["Alpha"],
-    )
-
-
-    count_columns[1].metric(
-        "Electron / Positron",
-        summary["Electron/Positron"],
-    )
-
-
-    count_columns[2].metric(
-        "Proton",
-        summary["Proton"],
-    )
-
-
-    count_columns[3].metric(
-        "Uncertain",
-        summary["Uncertain"],
-    )
-
-
-    # -----------------------------------------------------
-    # Classified image
-    # -----------------------------------------------------
-
-    st.image(
-        _bgr_to_rgb(
-            classified_image
-        ),
-        caption=(
-            "Extra Trees prediction for each detected particle track."
-        ),
-    )
-
-
-    # -----------------------------------------------------
-    # Simple results
-    # -----------------------------------------------------
-
-    st.subheader(
-        "Track Predictions"
-    )
-
-
-    simple_rows = []
-
-
-    for row in report_rows:
-
-        simple_rows.append(
+    samples = st.session_state.get("input_batch") or (
+        [
             {
-                "Track":
-                    row["Track"],
+                "image": image,
+                "name": st.session_state["input_name"],
+                "description": st.session_state["source_description"],
+            }
+        ]
+        if image is not None
+        else []
+    )
 
-                "Prediction":
-                    row["Particle type"],
+    if not samples:
+        st.info("No acquired input is available to classify.")
+        return
 
-                "Confidence":
-                    f"{row['Confidence']:.1%}",
+    button_label = (
+        "Classify All Inputs"
+        if len(samples) > 1
+        else "Classify Image"
+    )
 
-                "Status":
-                    row["Status"],
+    if st.button(button_label, type="primary", key="btn_classify_extra_trees"):
+        batch_results = {}
+        progress = st.progress(0.0, text="Processing batch with Extra Trees...")
+        for index, sample in enumerate(samples):
+            sample_result = _process_pipeline_image(sample["image"], config)
+            sample_predictions = predict_extra_trees_tracks(
+                model_bundle, sample_result["features"]
+            )
+            sample_quality = assess_all_contours(
+                sample_result["features"],
+                sample_result["enhancement"].enhanced,
+                sample_result["segmentation"].binary_mask,
+                sample_result["segmentation"].parameters,
+            )
+            batch_results[sample["name"]] = {
+                "image": sample["image"],
+                "description": sample["description"],
+                "result": sample_result,
+                "predictions": sample_predictions,
+                "quality": sample_quality,
+            }
+            progress.progress(
+                (index + 1) / len(samples),
+                text=f"Processed {index + 1} of {len(samples)} inputs",
+            )
+        progress.empty()
+        st.session_state["extra_trees_batch_results"] = batch_results
+
+    batch_results = st.session_state.get("extra_trees_batch_results", {})
+    if batch_results:
+        st.subheader("Batch classification results")
+        for index, (name, entry) in enumerate(batch_results.items(), start=1):
+            item_predictions = entry["predictions"]
+            item_quality = entry["quality"]
+            item_result = entry["result"]
+            item_summary = build_summary(
+                predictions=item_predictions,
+                quality_assessments=item_quality,
+                confidence_threshold=confidence_threshold,
+                processing_time_ms=float(
+                    item_result["segmentation"].processing_time_ms
+                )
+                + sum(
+                    float(item["inference_time_ms"])
+                    for item in item_predictions
+                ),
+            )
+            item_summary["class_counts"] = _extra_trees_class_counts(
+                item_predictions, model_classes
+            )
+            st.session_state["extra_trees_batch_reports"][name] = {
+                "Input": name,
+                "Source": entry["description"],
+                "Tracks": item_summary["detected_contours"],
+                "Dominant prediction": item_summary["dominant_prediction"],
+                "Confident": item_summary["confident_classifications"],
+                "Uncertain": item_summary["uncertain_classifications"],
+                "Class counts": item_summary["class_counts"],
+                "Contour quality": item_summary["overall_contour_quality"],
+                "Mean quality score": item_summary["mean_contour_quality"],
+                "Processing time (ms)": item_summary["processing_time_ms"],
+            }
+            with st.expander(
+                f"Image {index}: {name} — "
+                f"{item_summary['detected_contours']} tracks — "
+                f"Main prediction: {item_summary['dominant_prediction']}",
+                expanded=False,
+            ):
+                if item_predictions:
+                    item_overlay, _ = build_extra_trees_visual_report(
+                        image=entry["image"],
+                        features=item_result["features"],
+                        predictions=item_predictions,
+                        confidence_threshold=confidence_threshold,
+                        quality_assessments=item_quality,
+                    )
+                    st.image(_bgr_to_rgb(item_overlay), width=700)
+                else:
+                    st.warning("No segmented track was available to classify.")
+
+        selected_name = st.selectbox(
+            "Choose an input for the detailed report",
+            list(batch_results),
+            key="extra_trees_batch_selector",
+        )
+        selected_entry = batch_results[selected_name]
+        st.session_state["input_image"] = selected_entry["image"]
+        st.session_state["input_name"] = selected_name
+        st.session_state["source_description"] = selected_entry["description"]
+        st.session_state["pipeline_result"] = selected_entry["result"]
+        st.session_state["extra_trees_predictions"] = selected_entry["predictions"]
+        st.session_state["extra_trees_quality"] = selected_entry["quality"]
+        result = selected_entry["result"]
+
+    predictions = st.session_state.get("extra_trees_predictions")
+    if predictions is None:
+        return
+    if not predictions:
+        st.warning("No segmented track is available for classification.")
+        return
+
+    quality_assessments = st.session_state.get("extra_trees_quality")
+    if quality_assessments is None and result is not None:
+        quality_assessments = assess_all_contours(
+            result["features"],
+            result["enhancement"].enhanced,
+            result["segmentation"].binary_mask,
+            result["segmentation"].parameters,
+        )
+        st.session_state["extra_trees_quality"] = quality_assessments
+
+    classified_image, report_rows = build_extra_trees_visual_report(
+        image=st.session_state["input_image"],
+        features=result["features"],
+        predictions=predictions,
+        confidence_threshold=confidence_threshold,
+        quality_assessments=quality_assessments,
+    )
+    for row, prediction, quality in zip(
+        report_rows, predictions, quality_assessments or [], strict=False
+    ):
+        if quality:
+            row["Reporting decision"] = reporting_status(
+                confidence=float(prediction["confidence"]),
+                confidence_threshold=confidence_threshold,
+                quality_score=int(quality["score"]),
+            )
+
+    processing_time_ms = float(result["segmentation"].processing_time_ms) + sum(
+        float(item["inference_time_ms"]) for item in predictions
+    )
+    summary = build_summary(
+        predictions=predictions,
+        quality_assessments=quality_assessments or [],
+        confidence_threshold=confidence_threshold,
+        processing_time_ms=processing_time_ms,
+    )
+    summary["class_counts"] = _extra_trees_class_counts(
+        predictions, model_classes
+    )
+    metadata = make_traceability_metadata(
+        input_name=st.session_state["input_name"],
+        source_description=st.session_state["source_description"],
+        roi_profile=result["roi_profile"],
+        confidence_threshold=confidence_threshold,
+        model_path=str(model_path),
+        model_classes=model_bundle["classes"],
+        segmentation_parameters=result["segmentation"].parameters,
+    )
+    metadata["model_version"] = (
+        f"{model_path.stat().st_size}-{model_path.stat().st_mtime_ns}"
+    )
+    track_reports = []
+    for track, prediction, quality in zip(
+        result["features"], predictions, quality_assessments or [], strict=False
+    ):
+        track_reports.append(
+            {
+                "track_id": track.track_id,
+                "prediction": prediction,
+                "quality": quality,
+                "reporting_status": reporting_status(
+                    confidence=float(prediction["confidence"]),
+                    confidence_threshold=confidence_threshold,
+                    quality_score=int(quality["score"]) if quality else 0,
+                ),
+                "features": _feature_row(track),
             }
         )
+    complete_report = {
+        "metadata": metadata,
+        "summary": summary,
+        "tracks": track_reports,
+        "interpretation_note": (
+            "Extra Trees confidence estimates class preference. Contour quality is "
+            "an explainable heuristic and is not a correctness probability."
+        ),
+        "field_guide": [
+            {
+                "field": "Prediction and confidence",
+                "description": (
+                    "Prediction is the particle class preferred by Extra Trees. "
+                    "Confidence is the model probability for that class, not a "
+                    "guarantee that the prediction is correct."
+                ),
+            },
+            {
+                "field": "Reporting decision",
+                "description": (
+                    "Combines the selected confidence threshold with contour "
+                    "quality. Ambiguous or review results should be checked "
+                    "manually."
+                ),
+            },
+            {
+                "field": "Contour quality",
+                "description": (
+                    "A segmentation-quality heuristic based on the detected "
+                    "shape and local image evidence. It is separate from model "
+                    "confidence."
+                ),
+            },
+            {
+                "field": "Class probabilities",
+                "description": (
+                    "The CSV columns beginning with P(...) show the probability "
+                    "assigned to every class available in the trained model."
+                ),
+            },
+            {
+                "field": "Bounding box",
+                "description": (
+                    "X and Y locate the upper-left corner. Width and height are "
+                    "measured in pixels on the analysed image."
+                ),
+            },
+            {
+                "field": "Decision drivers",
+                "description": (
+                    "Lists the contour measurements that contributed most "
+                    "strongly to the Extra Trees decision for that track."
+                ),
+            },
+        ],
+    }
 
+    # =====================================================
+    # CLASSIFICATION RESULT
+    # =====================================================
 
+    st.header("Classification Summary")
+
+    summary_columns = st.columns(4)
+    summary_columns[0].metric("Tracks Detected", summary["detected_contours"])
+    summary_columns[1].metric("Main Prediction", summary["dominant_prediction"])
+    summary_columns[2].metric(
+        "Confident Tracks", summary["confident_classifications"]
+    )
+    summary_columns[3].metric(
+        "Needs Review", summary["uncertain_classifications"]
+    )
+
+    st.subheader("Predicted Particle Counts")
+    model_class_names = [
+        DISPLAY_NAMES.get(str(class_name), str(class_name))
+        for class_name in model_bundle["classes"]
+    ]
+    particle_count_rows = [
+        {
+            "Particle Type": class_name,
+            "Number of Tracks": summary["class_counts"].get(class_name, 0),
+        }
+        for class_name in model_class_names
+    ]
     st.dataframe(
-        simple_rows,
+        particle_count_rows,
         use_container_width=True,
         hide_index=True,
     )
 
+    st.subheader("Where Were the Particles Detected?")
+    st.image(
+        _bgr_to_rgb(classified_image),
+        caption=(
+            "Each box represents one detected track. The label shows the "
+            "predicted particle type and confidence."
+        ),
+    )
+    st.markdown(_extra_trees_legend(model_bundle["classes"]))
 
-    st.caption(
-        "Confidence shows how strongly Extra Trees supports its "
-        "prediction. Predictions below 60% confidence are marked "
-        "as Uncertain."
+    st.subheader("Track Results")
+    show_review_only = st.checkbox(
+        "Show only tracks that need review",
+        key="extra_trees_show_review_only",
+    )
+    simplified_rows = []
+    for row in report_rows:
+        decision = str(row.get("Reporting decision") or row.get("Status") or "")
+        simplified_rows.append(
+            {
+                "Track": f"T{row['Track']}",
+                "Prediction": row["Particle type"],
+                "Confidence": f"{float(row['Confidence']):.1%}",
+                "Result": decision,
+            }
+        )
+    if show_review_only:
+        review_terms = ("uncertain", "review", "ambiguous", "manual")
+        simplified_rows = [
+            row
+            for row in simplified_rows
+            if any(term in row["Result"].lower() for term in review_terms)
+        ]
+    st.dataframe(simplified_rows, use_container_width=True, hide_index=True)
+    st.info(
+        "How to read the results: Prediction is the particle type selected by "
+        "Extra Trees. Confidence shows how strongly the model prefers that "
+        "prediction. Tracks marked Uncertain or Review segmentation should be "
+        "checked manually."
     )
 
+    batch_row = {
+        "Input": st.session_state["input_name"],
+        "Source": st.session_state["source_description"],
+        "Tracks": summary["detected_contours"],
+        "Dominant prediction": summary["dominant_prediction"],
+        "Confident": summary["confident_classifications"],
+        "Uncertain": summary["uncertain_classifications"],
+        "Class counts": summary["class_counts"],
+        "Contour quality": summary["overall_contour_quality"],
+        "Mean quality score": summary["mean_contour_quality"],
+        "Processing time (ms)": summary["processing_time_ms"],
+    }
+    st.session_state["extra_trees_batch_reports"][
+        st.session_state["input_name"]
+    ] = batch_row
+    _render_extra_trees_batch_summary()
+
+    safe_name = Path(st.session_state["input_name"]).stem
+    st.subheader("Download Results")
+    downloads = st.columns(3)
+    downloads[0].download_button(
+        "Download annotated image",
+        data=encode_extra_trees_report_png(classified_image),
+        file_name=f"{safe_name}_extra_trees_report.png",
+        mime="image/png",
+    )
+    downloads[1].download_button(
+        "Particle CSV",
+        data=encode_extra_trees_report_csv(report_rows),
+        file_name=f"{safe_name}_extra_trees_report.csv",
+        mime="text/csv",
+    )
+    downloads[2].download_button(
+        "PDF summary",
+        data=encode_pdf_report(classified_image, complete_report),
+        file_name=f"{safe_name}_extra_trees_report.pdf",
+        mime="application/pdf",
+    )
 
     # =====================================================
-    # 5. ADVANCED DETAILS
+    # TECHNICAL DETAILS
     # =====================================================
 
-    with st.expander(
-        "Advanced Extra Trees Details"
-    ):
-
-        # -------------------------------------------------
-        # Per-class prediction probabilities
-        # -------------------------------------------------
-
-        st.subheader(
-            "Prediction Probabilities"
+    with st.expander("Technical details and model evidence"):
+        st.info(
+            "Most users can rely on the summary, image, and simple track table "
+            "above. This section is only for checking technical evidence."
+        )
+        st.subheader("Processing information")
+        processing_columns = st.columns(3)
+        processing_columns[0].metric(
+            "Processing time", f"{processing_time_ms:.1f} ms"
+        )
+        processing_columns[1].metric(
+            "Overall contour quality", summary["overall_contour_quality"]
+        )
+        processing_columns[2].metric(
+            "Mean contour quality score",
+            f"{summary['mean_contour_quality']:.0f}",
         )
 
-        st.write(
-            "Extra Trees calculates a probability for every particle "
-            "class. The class with the highest probability becomes "
-            "the prediction."
+        show_full_report = st.checkbox(
+            "Show the full technical track table",
+            key="extra_trees_show_full_report",
         )
-
-
-        probability_rows = []
-
-
-        for prediction in predictions:
-
-            row = {
-                "Track":
-                    prediction["track_id"],
-
-                "Prediction":
-                    prediction["particle_type"],
-
-                "Confidence":
-                    f"{prediction['confidence']:.1%}",
-            }
-
-
-            for class_name, probability in (
-                prediction["probabilities"].items()
-            ):
-
-                row[
-                    f"P({class_name})"
-                ] = f"{probability:.1%}"
-
-
-            probability_rows.append(
-                row
+        if show_full_report:
+            st.subheader("Full technical track table")
+            st.caption(
+                "This contains probabilities, contour quality, bounding boxes, "
+                "timing, and decision drivers. The same data is in the CSV."
             )
-
-
-        st.dataframe(
-            probability_rows,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
-        # -------------------------------------------------
-        # Inference time
-        # -------------------------------------------------
-
-        st.subheader(
-            "Extra Trees Classification Time"
-        )
-
-
-        average_time = sum(
-            prediction["inference_time_ms"]
-            for prediction in predictions
-        ) / len(predictions)
-
-
-        time_columns = st.columns(2)
-
-
-        time_columns[0].metric(
-            "Tracks Classified",
-            len(predictions),
-        )
-
-
-        time_columns[1].metric(
-            "Average Time per Track",
-            f"{average_time:.4f} ms",
-        )
-
-
-        st.caption(
-            "This measures the Extra Trees prediction stage only."
-        )
-
-
-        # -------------------------------------------------
-        # Training information
-        # -------------------------------------------------
+            st.dataframe(report_rows, use_container_width=True, hide_index=True)
 
         if training_report is not None:
-
-            # ---------------------------------------------
-            # Feature importance
-            # ---------------------------------------------
-
-            st.subheader(
-                "Feature Importance"
+            show_feature_importance = st.checkbox(
+                "Show which measurements influenced the model overall",
+                key="extra_trees_show_feature_importance",
             )
-
-
-            st.write(
-                "Feature importance shows which track measurements "
-                "contributed more strongly to the Extra Trees model."
-            )
-
-
-            feature_rows = []
-
-
-            for item in training_report.get(
-                "feature_importance",
-                [],
-            ):
-
-                feature_rows.append(
+            if show_feature_importance:
+                st.subheader("Which measurements mattered most?")
+                st.write(
+                    "A taller bar means the model used that measurement more "
+                    "often across all training decisions. It does not mean the "
+                    "measurement alone proves a particle type."
+                )
+                st.bar_chart(
                     {
-                        "Feature":
-                            item["feature"],
-
-                        "Importance":
-                            round(
-                                item["importance"],
-                                4,
-                            ),
-                    }
+                        item["feature"]: item["importance"]
+                        for item in training_report.get("feature_importance", [])
+                    },
+                    height=280,
                 )
 
-
-            st.dataframe(
-                feature_rows,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-
-            # ---------------------------------------------
-            # Confusion matrix
-            # ---------------------------------------------
-
-            st.subheader(
-                "Final-Test Confusion Matrix"
-            )
-
-
-            final_test = training_report[
-                "final_test"
-            ]
-
-
+            st.subheader("Final-Test Confusion Matrix")
+            final_test = training_report["final_test"]
             st.caption(
                 "Rows represent the correct particle classes. "
                 "Columns represent the Extra Trees predictions."
             )
-
-
-            st.write(
-                "Class order:",
-                final_test[
-                    "class_names"
-                ],
+            st.write("Class order:", final_test["class_names"])
+            cm_df = pd.DataFrame(
+                final_test["confusion_matrix"],
+                columns=final_test["class_names"],
+                index=final_test["class_names"],
             )
+            st.dataframe(cm_df, use_container_width=True)
 
-
-            st.dataframe(
-                final_test[
-                    "confusion_matrix"
-                ],
-                use_container_width=True,
-            )
-
-
-            # ---------------------------------------------
-            # Per-class results
-            # ---------------------------------------------
-
-            st.subheader(
-                "Per-Class Performance"
-            )
-
-
-            classification_report = (
-                final_test[
-                    "classification_report"
-                ]
-            )
-
-
+            st.subheader("Per-Class Performance")
+            classification_rep = final_test["classification_report"]
             class_rows = []
-
-
-            for class_name in final_test[
-                "class_names"
-            ]:
-
-                class_result = (
-                    classification_report[
-                        class_name
-                    ]
-                )
-
-
+            for class_name in final_test["class_names"]:
+                class_result = classification_rep[class_name]
                 class_rows.append(
                     {
-                        "Class":
-                            class_name,
-
-                        "Precision":
-                            round(
-                                class_result[
-                                    "precision"
-                                ],
-                                3,
-                            ),
-
-                        "Recall":
-                            round(
-                                class_result[
-                                    "recall"
-                                ],
-                                3,
-                            ),
-
-                        "F1 Score":
-                            round(
-                                class_result[
-                                    "f1-score"
-                                ],
-                                3,
-                            ),
-
-                        "Support":
-                            int(
-                                class_result[
-                                    "support"
-                                ]
-                            ),
+                        "Class": class_name,
+                        "Precision": round(class_result["precision"], 3),
+                        "Recall": round(class_result["recall"], 3),
+                        "F1 Score": round(class_result["f1-score"], 3),
+                        "Support": int(class_result["support"]),
                     }
                 )
+            st.dataframe(class_rows, use_container_width=True, hide_index=True)
 
 
-            st.dataframe(
-                class_rows,
-                use_container_width=True,
-                hide_index=True,
+
+def _render_extra_trees_batch_summary() -> None:
+    """Show accumulated image/frame Extra Trees results from the current GUI session."""
+    rows = list(st.session_state.get("extra_trees_batch_reports", {}).values())
+    if not rows:
+        return
+    st.subheader("Batch Results")
+    simple_rows = [
+        {
+            "Input": row["Input"],
+            "Tracks": row["Tracks"],
+            "Main Prediction": row["Dominant prediction"],
+            "Confident": row["Confident"],
+            "Uncertain": row["Uncertain"],
+        }
+        for row in rows
+    ]
+    st.dataframe(simple_rows, use_container_width=True, hide_index=True)
+
+
+def _extra_trees_class_styles(model_classes: list | tuple) -> list[tuple[str, str]]:
+    """Return friendly class names and CSS colours for classes in the bundle."""
+    styles = []
+    for class_name in model_classes:
+        class_id = str(class_name)
+        bgr = EXTRA_TREES_CLASS_COLOURS.get(class_id, (255, 255, 255))
+        blue, green, red = (int(value) for value in bgr)
+        styles.append(
+            (
+                DISPLAY_NAMES.get(class_id, class_id),
+                f"#{red:02X}{green:02X}{blue:02X}",
             )
-
-
-    # =====================================================
-    # 6. DOWNLOAD RESULTS
-    # =====================================================
-
-    with st.expander(
-        "Download Results"
-    ):
-
-        safe_name = Path(
-            st.session_state[
-                "input_name"
-            ]
-        ).stem
-
-
-        download_columns = (
-            st.columns(2)
         )
+    return styles
 
 
-        download_columns[0].download_button(
-            "Download Classified Image",
-            data=encode_extra_trees_report_png(
-                classified_image
-            ),
-            file_name=(
-                f"{safe_name}"
-                "_extra_trees_report.png"
-            ),
-            mime="image/png",
+def _extra_trees_class_counts(
+    predictions: list[dict], model_classes: list | tuple
+) -> dict[str, int]:
+    """Count predictions using the classes declared by the saved model."""
+    return {
+        DISPLAY_NAMES.get(str(class_name), str(class_name)): sum(
+            prediction["predicted_class"] == str(class_name)
+            for prediction in predictions
         )
+        for class_name in model_classes
+    }
 
 
-        download_columns[1].download_button(
-            "Download Result CSV",
-            data=encode_extra_trees_report_csv(
-                report_rows
-            ),
-            file_name=(
-                f"{safe_name}"
-                "_extra_trees_report.csv"
-            ),
-            mime="text/csv",
-        )
+def _extra_trees_legend(model_classes: list | tuple) -> str:
+    """Build a legend from the saved model classes and actual box colours."""
+    colour_names = {
+        "#FF0000": "Red",
+        "#0000FF": "Blue",
+        "#00FF00": "Green",
+        "#B400B4": "Purple",
+        "#FFFFFF": "White",
+    }
+    class_items = [
+        f"{colour_names[colour]} = {display_name}"
+        for display_name, colour in _extra_trees_class_styles(model_classes)
+    ]
+    return "**Legend:** " + " | ".join(
+        [*class_items, "Yellow = Uncertain", "Grey dashed = Review segmentation"]
+    )
 
 def _comparison_page() -> None:
     st.title("Final Model Comparison")
-    st.info(
-        "Purpose: compare CNN, SVM, Decision Tree, MLP and Extra Trees using "
-        "the same final-test split and the same metrics."
+    st.write(
+        "Final-test metrics are shown only from each model's saved training "
+        "report. Validation results are not used as final performance."
     )
-    st.markdown(
-        "Report per-class precision, recall and F1-score, macro F1-score, "
-        "confusion matrix and processing time. Use validation results for "
-        "model selection; use the final-test split only once after all models "
-        "and parameters are fixed."
-    )
-    report_path = Path("models/mlp_training_report.json")
-    if report_path.exists():
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        result = report["final_test"]
-        st.subheader("Available final-test results")
-        st.dataframe(
-            [
-                {
-                    "Model": "MLP",
-                    "Accuracy": result["accuracy"],
-                    "Balanced accuracy": result["balanced_accuracy"],
-                    "Macro F1": result["macro_f1"],
-                    "Weighted F1": result["weighted_f1"],
-                    "Mean time/track (ms)": result[
-                        "mean_inference_ms_per_track"
-                    ],
-                }
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(
-            "MLP confusion matrix: rows are true classes and columns are "
-            "predicted classes, in the displayed class order."
-        )
-        st.write(result["class_names"])
-        st.dataframe(result["confusion_matrix"], use_container_width=True)
-    else:
-        st.warning("The MLP report is not available. Run `python scripts/train_mlp.py`.")
 
-    st.info(
-        "Add the other four models' final-test reports here only after their "
-        "development and validation choices are fixed."
+    project_root = Path(__file__).resolve().parent
+    report_files = {
+        "CNN": "cnn_training_report.json",
+        "SVM": "svm_training_report.json",
+        "Decision Tree": "decision_tree_training_report.json",
+        "MLP": "mlp_training_report.json",
+        "Extra Trees": "extra_trees_training_report.json",
+    }
+    available_reports = {}
+    unavailable_models = []
+    comparison_rows = []
+
+    for model_name, filename in report_files.items():
+        path = project_root / "models" / filename
+        report = None
+        if path.exists():
+            try:
+                candidate_report = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(candidate_report.get("final_test"), dict):
+                    report = candidate_report
+            except (OSError, json.JSONDecodeError):
+                report = None
+
+        if report is None:
+            unavailable_models.append(model_name)
+            comparison_rows.append(
+                {
+                    "Model": model_name,
+                    "Accuracy": "Not available",
+                    "Balanced Accuracy": "Not available",
+                    "Macro F1": "Not available",
+                    "Weighted F1": "Not available",
+                    "Mean Inference Time / Track (ms)": "Not available",
+                }
+            )
+            continue
+
+        available_reports[model_name] = report
+        final_test = report["final_test"]
+        mean_time = final_test.get(
+            "mean_inference_ms_per_track",
+            final_test.get("mean_inference_time_per_track_ms"),
+        )
+        comparison_rows.append(
+            {
+                "Model": model_name,
+                "Accuracy": f"{float(final_test['accuracy']):.3f}",
+                "Balanced Accuracy": f"{float(final_test['balanced_accuracy']):.3f}",
+                "Macro F1": f"{float(final_test['macro_f1']):.3f}",
+                "Weighted F1": f"{float(final_test['weighted_f1']):.3f}",
+                "Mean Inference Time / Track (ms)": (
+                    f"{float(mean_time):.4f}" if mean_time is not None else "Not available"
+                ),
+            }
+        )
+
+    highest_macro_model = None
+    if available_reports:
+        highest_macro_model = max(
+            available_reports,
+            key=lambda name: float(
+                available_reports[name]["final_test"]["macro_f1"]
+            ),
+        )
+        for row in comparison_rows:
+            if row["Model"] == highest_macro_model:
+                row["Model"] = f"★ {row['Model']}"
+
+    st.dataframe(comparison_rows, use_container_width=True, hide_index=True)
+
+    if highest_macro_model:
+        highest_score = available_reports[highest_macro_model]["final_test"][
+            "macro_f1"
+        ]
+        st.success(
+            f"Highest Final-Test Macro F1: **{highest_macro_model}** "
+            f"({float(highest_score):.3f})."
+        )
+
+    if unavailable_models:
+        st.warning(
+            "Not included yet because no usable final-test report was found: "
+            + ", ".join(unavailable_models)
+            + "."
+        )
+
+    configured_classes = set(
+        load_config()["classification"]["supported_classes"]
     )
+    compatibility_signatures = {}
+    compatibility_problems = []
+    for model_name, report in available_reports.items():
+        final_test = report["final_test"]
+        report_classes = set(str(name) for name in final_test.get("class_names", []))
+        if report_classes != configured_classes:
+            compatibility_problems.append(
+                f"{model_name} uses a different class taxonomy."
+            )
+
+        final_counts = report.get("class_counts", {}).get("final_test", {})
+        final_signature = tuple(
+            sorted((str(name), int(count)) for name, count in final_counts.items())
+        )
+        feature_signature = tuple(report.get("feature_columns", []))
+        split_identity = report.get("final_test_split_id") or report.get(
+            "final_test_dataset"
+        )
+        feature_method = report.get("feature_source")
+        if not split_identity or not feature_method or not final_signature:
+            compatibility_problems.append(
+                f"{model_name} does not record enough dataset/method metadata "
+                "to verify direct comparability."
+            )
+        compatibility_signatures[model_name] = (
+            tuple(sorted(report_classes)),
+            final_signature,
+            feature_signature,
+            split_identity,
+            feature_method,
+        )
+
+    if len(set(compatibility_signatures.values())) > 1:
+        compatibility_problems.append(
+            "Available reports do not record matching final-test identity, "
+            "class counts, and shared feature methodology, so their scores "
+            "are shown for reference but should not be treated as a direct "
+            "ranking."
+        )
+
+    if compatibility_problems:
+        st.warning(" ".join(compatibility_problems))
+    elif len(available_reports) > 1:
+        st.caption(
+            "Compatibility check passed: available reports record the same "
+            "class taxonomy, final-test identity and counts, and feature "
+            "methodology."
+        )
+
+    for model_name, report in available_reports.items():
+        final_test = report["final_test"]
+        class_names = [str(name) for name in final_test.get("class_names", [])]
+        with st.expander(f"{model_name} final-test details"):
+            st.subheader("Confusion matrix")
+            confusion = final_test.get("confusion_matrix")
+            if confusion and class_names:
+                st.caption("Rows are true classes; columns are predicted classes.")
+                st.dataframe(
+                    pd.DataFrame(confusion, index=class_names, columns=class_names),
+                    use_container_width=True,
+                )
+            else:
+                st.info("Confusion-matrix data is not available in this report.")
+
+            st.subheader("Per-class performance")
+            classification_rep = final_test.get("classification_report", {})
+            class_rows = []
+            for class_name in class_names:
+                class_result = classification_rep.get(class_name, {})
+                class_rows.append(
+                    {
+                        "Class": DISPLAY_NAMES.get(class_name, class_name),
+                        "Precision": class_result.get("precision"),
+                        "Recall": class_result.get("recall"),
+                        "F1": class_result.get("f1-score"),
+                        "Support": class_result.get("support"),
+                    }
+                )
+            st.dataframe(class_rows, use_container_width=True, hide_index=True)
+
+            mean_time = final_test.get(
+                "mean_inference_ms_per_track",
+                final_test.get("mean_inference_time_per_track_ms"),
+            )
+            st.subheader("Processing time")
+            if mean_time is None:
+                st.write("Mean inference time per track: Not available")
+            else:
+                st.metric(
+                    "Mean inference time / track",
+                    f"{float(mean_time):.4f} ms",
+                )
 
 
 def _feature_row(item) -> dict:
@@ -1654,6 +1773,7 @@ def _set_input(image: np.ndarray, name: str, description: str) -> None:
     st.session_state["mlp_predictions"] = None
     st.session_state["extra_trees_predictions"] = None
     st.session_state["mlp_quality"] = None
+    st.session_state["extra_trees_quality"] = None
 
 
 def _detect_layout_profile(image: np.ndarray) -> str:
