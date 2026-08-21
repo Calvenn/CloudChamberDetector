@@ -8,6 +8,7 @@ threshold → morphological opening/closing → contours → contour features.
 | `app.py` | Runs the Streamlit interface and displays every shared stage. |
 | `config.yaml` | Stores fixed paths and experiment parameters. |
 | `cloud_chamber/acquisition.py` | Loads images and captures video frames. |
+| `cloud_chamber/calibration.py` | Converts pixel measurements to physical units and optionally corrects perspective. |
 | `cloud_chamber/enhancement.py` | Performs grayscale conversion and Gaussian filtering. |
 | `cloud_chamber/segmentation.py` | Performs thresholding, morphology and contour detection. |
 | `cloud_chamber/features.py` | Converts contours into the common numerical feature vector. |

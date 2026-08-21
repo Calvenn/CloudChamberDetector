@@ -8,6 +8,54 @@ from typing import Any
 import cv2
 import numpy as np
 
+
+def scale_pixel_parameters(
+    settings: dict,
+    reference_size: int,
+    processing_size: tuple[int, int],
+) -> dict:
+    """Preserve existing pixel-parameter proportions at a new resolution.
+
+    This does not introduce a new enhancement or segmentation technique. It
+    converts parameters previously expressed at the 1920-pixel reference into
+    equivalent lengths and areas at the configured ROI processing size.
+    """
+    if reference_size < 2:
+        raise ValueError("Pixel-parameter reference size must exceed one")
+    ratio = max(processing_size) / float(reference_size)
+    scaled = dict(settings)
+
+    for name in (
+        "minimum_major_axis",
+        "minimum_thin_perimeter",
+        "minimum_thin_major_axis",
+        "alignment_merge_gap",
+    ):
+        if name in scaled:
+            scaled[name] = max(1, int(round(float(scaled[name]) * ratio)))
+
+    for name in ("minimum_object_area", "minimum_thin_area"):
+        if name in scaled:
+            scaled[name] = max(1, int(round(float(scaled[name]) * ratio * ratio)))
+
+    for name in (
+        "top_hat_kernel",
+        "closing_kernel",
+        "opening_kernel",
+        "directional_closing_length",
+    ):
+        if name in scaled:
+            value = max(1, int(round(float(scaled[name]) * ratio)))
+            scaled[name] = value if value % 2 == 1 else value + 1
+
+    if "hysteresis_seed_pixels" in scaled:
+        scaled["hysteresis_seed_pixels"] = max(
+            1, int(round(float(scaled["hysteresis_seed_pixels"]) * ratio * ratio))
+        )
+    scaled["pixel_parameter_scale"] = ratio
+    scaled["pixel_parameter_reference_size"] = int(reference_size)
+    return scaled
+
 from cloud_chamber.models import SegmentationResult
 
 
@@ -171,7 +219,7 @@ def segment_tracks(
         # Preserve the closed mask exactly. Noise rejection is performed using
         # contour area, length and aspect ratio below, rather than erosion.
         refined = closed.copy()
-
+    refined = cv2.bitwise_and(refined, roi_mask)
     found, _ = cv2.findContours(
         refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
@@ -194,6 +242,13 @@ def segment_tracks(
         minor_axis = float(min(side_a, side_b))
         aspect_ratio = major_axis / minor_axis if minor_axis > 0 else 0.0
         x, y, width, height = cv2.boundingRect(contour)
+
+        # Reject any contour whose center lies outside the active ROI bounds
+        cx = x + width // 2
+        cy = y + height // 2
+        if cx < roi_left or cx >= roi_right or cy < roi_top or cy >= roi_bottom:
+            rejected_contours.append(contour)
+            continue
 
         # A general path retains substantial tracks, while the second path
         # preserves thin electron-like contours near their labelled lower-tail
@@ -246,6 +301,7 @@ def segment_tracks(
             maximum_angle_difference=alignment_merge_angle,
             minimum_aspect_ratio=alignment_merge_minimum_aspect,
         )
+    clean_mask = cv2.bitwise_and(clean_mask, roi_mask)
     # Re-read contours from the final accepted mask. This guarantees that the
     # returned contours and bounding boxes describe exactly the same white
     # regions shown in the GUI and later used for feature extraction.

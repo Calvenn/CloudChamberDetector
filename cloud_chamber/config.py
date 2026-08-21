@@ -23,6 +23,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
         "paths",
         "acquisition",
         "enhancement",
+        "spatial_scaling",
         "segmentation",
         "evaluation",
     }
@@ -30,6 +31,24 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     if missing:
         names = ", ".join(sorted(missing))
         raise ValueError(f"Missing configuration sections: {names}")
+
+    processing = config["spatial_scaling"]
+    if int(processing["tile_size"]) < 2:
+        raise ValueError("spatial_scaling.tile_size must exceed one pixel")
+    overlap_ratio = float(processing["overlap_ratio"])
+    if not 0.0 <= overlap_ratio < 1.0:
+        raise ValueError("spatial_scaling.overlap_ratio must be in [0, 1)")
+    for dimension in ("processing_width", "processing_height"):
+        if int(processing[dimension]) < 2:
+            raise ValueError(f"spatial_scaling.{dimension} must exceed one pixel")
+    if int(processing["processing_width"]) != int(processing["processing_height"]):
+        raise ValueError(
+            "spatial_scaling processing width and height must match for a 1:1 ROI"
+        )
+    if int(processing.get("pixel_parameter_reference_size", 1920)) < 2:
+        raise ValueError(
+            "spatial_scaling.pixel_parameter_reference_size must exceed one pixel"
+        )
 
     kernel = int(config["enhancement"]["gaussian_kernel"])
     if kernel < 1 or kernel % 2 == 0:

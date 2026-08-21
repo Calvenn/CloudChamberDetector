@@ -12,8 +12,13 @@ import numpy as np
 
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
+from cloud_chamber.calibration import (
+    DEFAULT_PROCESSING_SIZE,
+    extract_roi,
+    select_and_scale_roi,
+)
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
-from cloud_chamber.segmentation import segment_tracks
+from cloud_chamber.segmentation import scale_pixel_parameters, segment_tracks
 
 
 def decode_uncompressed_rle(segmentation: dict) -> np.ndarray:
@@ -36,11 +41,43 @@ def decode_uncompressed_rle(segmentation: dict) -> np.ndarray:
     return np.ascontiguousarray(flat.reshape((height, width), order="F"))
 
 
+def annotation_to_mask(annotation: dict, image_shape: tuple[int, int]) -> np.ndarray:
+    """Decode an instance mask or fall back to its COCO bounding box."""
+    segmentation = annotation.get("segmentation")
+    if segmentation is not None:
+        return decode_uncompressed_rle(segmentation)
+
+    if "bbox" not in annotation:
+        raise KeyError(f"Annotation has neither segmentation nor bbox: {annotation}")
+
+    x, y, width, height = [float(value) for value in annotation["bbox"]]
+    mask = np.zeros(image_shape[:2], dtype=np.uint8)
+    x0 = int(np.clip(np.round(x), 0, image_shape[1] - 1))
+    y0 = int(np.clip(np.round(y), 0, image_shape[0] - 1))
+    x1 = int(np.clip(np.round(x + width), 0, image_shape[1]))
+    y1 = int(np.clip(np.round(y + height), 0, image_shape[0]))
+    if x1 <= x0 or y1 <= y0:
+        return mask
+    cv2.rectangle(mask, (x0, y0), (x1 - 1, y1 - 1), 255, thickness=-1)
+    return mask
+
+
+def _scale_label_mask(
+    mask: np.ndarray,
+    coordinates,
+    target_size: tuple[int, int],
+) -> np.ndarray:
+    """Apply the image ROI transform to a categorical mask without blending."""
+    selected, _ = extract_roi(mask, coordinates, target_size)
+    return cv2.resize(selected, target_size, interpolation=cv2.INTER_NEAREST)
+
+
 def build_feature_csv(
     annotation_path: str | Path,
     output_path: str | Path,
     enhancement_settings: dict,
     allowed_labels: set[str] | None = None,
+    target_size: tuple[int, int] = DEFAULT_PROCESSING_SIZE,
 ) -> dict[str, int]:
     """Measure one labelled feature row for every valid COCO instance."""
     annotation_path = Path(annotation_path).resolve()
@@ -59,10 +96,17 @@ def build_feature_csv(
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(f"Cannot read linked image: {image_path}")
-        enhanced = enhance_image(image, enhancement_settings).enhanced
+        source_shape = image.shape
+        normalisation = select_and_scale_roi(image, target_size=target_size)
+        enhanced = enhance_image(
+            normalisation.image, enhancement_settings
+        ).enhanced
 
         for annotation in annotations:
-            mask = decode_uncompressed_rle(annotation["segmentation"])
+            mask = annotation_to_mask(annotation, source_shape)
+            mask = _scale_label_mask(
+                mask, normalisation.coordinates, target_size
+            )
             measured = extract_track_features(mask, enhanced, minimum_area=1.0)
             if not measured:
                 continue
@@ -98,6 +142,7 @@ def build_segmented_feature_csv(
     config: dict,
     allowed_labels: set[str] | None = None,
     minimum_label_overlap: float = 0.5,
+    roi_profile_name: str = "external_muller",
 ) -> dict[str, int]:
     """Build labelled features from automatic contours, not perfect masks.
 
@@ -116,12 +161,29 @@ def build_segmented_feature_csv(
         if allowed_labels is None or label in allowed_labels:
             grouped[int(annotation["image_id"])].append(annotation)
 
-    profile = config["segmentation"]["roi_profiles"]["external_muller"]
-    margins = {side: profile[side] for side in ("left", "right", "top", "bottom")}
+    profiles = config["segmentation"]["roi_profiles"]
+    if roi_profile_name not in profiles:
+        raise ValueError(f"Unknown segmentation ROI profile: {roi_profile_name}")
+    profile = profiles[roi_profile_name]
+    source_margins = {side: 0.0 for side in ("left", "right", "top", "bottom")}
     segmentation_settings = {
         **config["segmentation"],
-        **{name: value for name, value in profile.items() if name not in margins},
+        **{
+            name: value
+            for name, value in profile.items()
+            if name not in ("left", "right", "top", "bottom")
+        },
     }
+    scaling_settings = config.get("spatial_scaling", {})
+    target_size = (
+        int(scaling_settings["processing_width"]),
+        int(scaling_settings["processing_height"]),
+    )
+    segmentation_settings = scale_pixel_parameters(
+        segmentation_settings,
+        int(scaling_settings.get("pixel_parameter_reference_size", 1920)),
+        target_size,
+    )
     feature_minimum_area = float(segmentation_settings["minimum_object_area"])
     if segmentation_settings.get("enable_thin_track_rule", True):
         feature_minimum_area = min(
@@ -137,6 +199,10 @@ def build_segmented_feature_csv(
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(f"Cannot read linked image: {image_path}")
+        source_image_shape = image.shape[:2]
+        normalisation = select_and_scale_roi(image, target_size=target_size)
+        image = normalisation.image
+        margins = source_margins
         enhanced = enhance_image(image, config["enhancement"])
         segmented = segment_tracks(
             enhanced.enhanced, segmentation_settings, margins
@@ -153,7 +219,11 @@ def build_segmented_feature_csv(
         labelled_masks = [
             (
                 annotation,
-                decode_uncompressed_rle(annotation["segmentation"]) > 0,
+                _scale_label_mask(
+                    annotation_to_mask(annotation, source_image_shape),
+                    normalisation.coordinates,
+                    target_size,
+                ) > 0,
             )
             for annotation in annotations
         ]

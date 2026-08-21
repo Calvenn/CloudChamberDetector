@@ -654,7 +654,7 @@
     "min_samples_split": 8,
     "min_weight_fraction_leaf": 0.0,
     "monotonic_cst": null,
-    "n_estimators": 100,
+    "n_estimators": 500,
     "n_jobs": -1,
     "oob_score": false,
     "random_state": 42,
@@ -915,5 +915,5 @@
       "importance": 0.04467599587565882
     }
   ],
-  "model_path": "C:\\CloudChamber\\CloudChamberDetector\\models\\extra_trees_classifier.joblib"
+  "model_path": "C:\\Coding\\CloudChamberDetector\\models\\extra_trees_classifier.joblib"
 }
