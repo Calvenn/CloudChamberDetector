@@ -207,18 +207,20 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
 
     if short_name == "MLP":
         overlay, report_rows = model_viz(
-            image=result["input_image"],
+            image=result.get("original_image", result["input_image"]),
             features=result["features"],
             predictions=predictions,
             confidence_threshold=confidence_threshold,
             quality_assessments=quality_assessments,
+            original_boxes=result.get("original_bounding_boxes"),
         )
     else:
         overlay, report_rows = model_viz(
-            result["input_image"],
+            result.get("original_image", result["input_image"]),
             result["features"],
             predictions,
             confidence_threshold,
+            original_boxes=result.get("original_bounding_boxes"),
         )
     for row, track, prediction, quality in zip(
         report_rows,

@@ -243,6 +243,8 @@ def render_cnn_page(config: dict, context: PageContext) -> None:
         "centimetres_per_pixel": result["centimetres_per_pixel"],
         "perspective_rectified": result["rectified"],
     }
+    metadata["spatial_scaling"] = result["spatial_scaling"]
+    metadata["rectification"] = result["rectification"]
 
     st.subheader("Image-level result summary")
     summary_columns = st.columns(6)

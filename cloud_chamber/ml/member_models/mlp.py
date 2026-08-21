@@ -112,6 +112,7 @@ def build_visual_report(
     predictions: list[dict],
     confidence_threshold: float = 0.60,
     quality_assessments: list[dict] | None = None,
+    original_boxes: list[dict] | None = None,
 ) -> tuple[np.ndarray, list[dict]]:
     """Draw classified tracks and build the matching tabular report.
 
@@ -128,8 +129,15 @@ def build_visual_report(
 
     overlay = image.copy()
     rows = []
-    for track, prediction in zip(feature_list, predictions, strict=True):
-        x, y, width, height = track.bounding_box
+    for index, (track, prediction) in enumerate(
+        zip(feature_list, predictions, strict=True)
+    ):
+        if original_boxes and index < len(original_boxes):
+            box = original_boxes[index]
+            x, y = int(round(box["x"])), int(round(box["y"]))
+            width, height = int(round(box["width"])), int(round(box["height"]))
+        else:
+            x, y, width, height = track.bounding_box
         confidence = float(prediction["confidence"])
         uncertain = confidence < confidence_threshold
         quality = quality_by_track.get(track.track_id)

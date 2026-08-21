@@ -1,24 +1,41 @@
-﻿"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
+"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
 
 from __future__ import annotations
 
-import json
+import hashlib
 import tempfile
+from dataclasses import replace
+from time import perf_counter
 from pathlib import Path
 
 import cv2
 import numpy as np
 import streamlit as st
+from PIL import Image
 
 from cloud_chamber.config import load_config
 from cloud_chamber.calibration import (
+    RoiScalingResult,
+    default_roi_coordinates,
     detect_chamber_corners,
-    spatial_scale,
+    extract_roi,
     rectify_image,
+    rectify_image_with_transform,
+    select_and_scale_roi,
+    spatial_scale_roi,
 )
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
-from cloud_chamber.segmentation import segment_tracks
+from cloud_chamber.models import EnhancementResult, SegmentationResult
+from cloud_chamber.segmentation import scale_pixel_parameters, segment_tracks
+from cloud_chamber.tiling import (
+    coverage_map,
+    draw_tile_boundaries,
+    generate_overlapping_tiles,
+    map_processed_mask_to_image,
+    merge_tile_masks,
+    spatial_scale_tile,
+)
 from cloud_chamber.ui.navigation import (
     COMPARISON_PAGE,
     MODEL_PAGES,
@@ -64,7 +81,7 @@ def _build_page_handlers():
     """Connect navigation labels to the existing page-rendering functions."""
     context = PageContext(
         bgr_to_rgb=_bgr_to_rgb,
-        process_pipeline_image=_process_pipeline_image,
+        process_pipeline_image=_process_tiled_pipeline_image,
         feature_row=_feature_row,
     )
     return {
@@ -103,6 +120,7 @@ def _initialise_state() -> None:
     st.session_state.setdefault("decision_tree_batch_results", {})
     st.session_state.setdefault("svm_batch_results", {})
     st.session_state.setdefault("calibration_settings", None)
+    st.session_state.setdefault("rectification_settings_by_input", {})
     st.session_state.setdefault("config", None)
 
 
@@ -115,76 +133,34 @@ def _shared_pipeline_page(config: dict) -> None:
     if image is None:
         return
 
-    calibration_settings = _calibration_section(image)
-    result = _process_pipeline_image(image, config, calibration_settings)
+    rectification_settings = _automatic_rectification_section(image)
+    processing_settings = {**rectification_settings}
+    result = _process_tiled_pipeline_image(image, config, processing_settings)
     analysis_image = result["input_image"]
     enhancement = result["enhancement"]
     segmentation = result["segmentation"]
     features = result["features"]
-    scaling = result["spatial_normalisation"]
-    st.header("Spatial scaling")
-    scaling_columns = st.columns(2)
-    scaling_columns[0].image(
-        _bgr_to_rgb(result["rectified_image"]),
-        caption=(
-            f"Rectified source: {scaling['original_width']} × "
-            f"{scaling['original_height']} pixels"
-        ),
-    )
-    scaling_columns[1].image(
-        _bgr_to_rgb(result["spatially_scaled_image"]),
-        caption=(
-            f"Spatially scaled image: {scaling['scaled_width']} × "
-            f"{scaling['scaled_height']} pixels"
-        ),
-    )
+    scaling = result["spatial_scaling"]
+    st.header("Automatic overlapping tiling and spatial scaling")
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Tiles", scaling["tile_count"])
+    metric_columns[1].metric("Tile size", f"{scaling['tile_size']} × {scaling['tile_size']}")
+    metric_columns[2].metric("Processing size", scaling["processing_resolution"])
+    metric_columns[3].metric("Minimum coverage", scaling["minimum_coverage"])
     st.caption(
-        f"Longest side normalised to {scaling['target_longest_side']} pixels; "
-        f"scale factor = {scaling['scale']:.4f}. Scaling is performed after "
-        "rectification and before image enhancement."
+        f"The complete rectified processing copy is covered using "
+        f"{scaling['overlap_ratio']:.0%} overlap. Every tile is spatially "
+        "scaled before enhancement; the original uploaded image remains unchanged."
     )
-    st.subheader("Spatial-resolution selection")
-    resolution_report = Path("results/spatial_resolution_validation.json")
-    if resolution_report.exists():
-        resolution_rows = json.loads(
-            resolution_report.read_text(encoding="utf-8")
+    with st.expander("Show tile coverage and metadata"):
+        st.image(
+            _bgr_to_rgb(result["tile_boundary_preview"]),
+            caption="Automatic overlapping tile boundaries",
         )
-        best_f1 = max(row["f1"] for row in resolution_rows)
-        st.dataframe(
-            [
-                {
-                    "Longest side": row["longest_side"],
-                    "Precision": round(row["precision"], 3),
-                    "Recall": round(row["recall"], 3),
-                    "F1": round(row["f1"], 3),
-                    "Mean time (ms/image)": round(
-                        row["mean_processing_ms"], 1
-                    ),
-                    "Result": (
-                        "Highest validation F1"
-                        if row["f1"] == best_f1
-                        else (
-                            "Current configured target"
-                            if row["longest_side"]
-                            == scaling["target_longest_side"]
-                            else "Candidate"
-                        )
-                    ),
-                }
-                for row in resolution_rows
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
-    st.caption(
-        "Measured on 127 validation images using one-to-one IoU ≥ 0.50. "
-        "The combined result is dominated by the larger external validation "
-        "set; primary and thin-track results must also be considered before "
-        "fixing the final target."
-    )
+        st.dataframe(result["tile_metadata"], use_container_width=True, hide_index=True)
     st.header("Grayscale conversion and Gaussian filtering")
     columns = st.columns(3)
-    columns[0].image(_bgr_to_rgb(analysis_image), caption="Calibrated input")
+    columns[0].image(_bgr_to_rgb(analysis_image), caption="Full processing image")
     columns[1].image(enhancement.grey, caption="Grayscale")
     columns[2].image(enhancement.denoised, caption="Gaussian filtered")
 
@@ -220,12 +196,14 @@ def _shared_pipeline_page(config: dict) -> None:
         st.session_state.get("input_name"), None
     )
 
-    overlay = analysis_image.copy()
+    overlay = image.copy()
     # These boxes come only from the accepted contours used to create the
     # clean mask above. Rejected and out-of-ROI contours cannot appear here.
-    for x, y, width, height in segmentation.bounding_boxes:
+    for item in result["original_bounding_boxes"]:
+        x, y = int(round(item["x"])), int(round(item["y"]))
+        width, height = int(round(item["width"])), int(round(item["height"]))
         cv2.rectangle(overlay, (x, y), (x + width, y + height), (0, 255, 255), 2)
-    st.image(_bgr_to_rgb(overlay), caption="Detected particle-track contours")
+    st.image(_bgr_to_rgb(overlay), caption="Final detections on original full-resolution image")
 
     st.header("Contour-based feature extraction")
     rows = [
@@ -238,107 +216,346 @@ def _shared_pipeline_page(config: dict) -> None:
         st.warning("No contour passed the configured minimum-area filter.")
 
 
-def _calibration_section(image: np.ndarray) -> dict | None:
-    """Collect editable chamber corners for perspective rectification."""
-    st.header("Perspective rectification")
+def _processing_size(config: dict) -> tuple[int, int]:
+    """Return the single configured ROI processing resolution."""
+    settings = config.get("spatial_scaling", {})
+    return (
+        int(settings["processing_width"]),
+        int(settings["processing_height"]),
+    )
+
+
+def _roi_source_key(image: np.ndarray) -> str:
+    """Identify an acquired image independently of its display filename."""
     height, width = image.shape[:2]
-    rectification_points = None
-    if True:
-        detected_corners = detect_chamber_corners(image)
-        source_key = f"{st.session_state.get('input_name')}:{width}x{height}"
-        coordinate_keys = [
-            (f"rectification_x_{index}", f"rectification_y_{index}")
-            for index in range(4)
-        ]
-        if st.session_state.get("calibration_corner_source") != source_key:
-            st.session_state["calibration_corner_source"] = source_key
-            for point, (x_key, y_key) in zip(
-                detected_corners, coordinate_keys
-            ):
-                st.session_state[x_key] = int(round(float(point[0])))
-                st.session_state[y_key] = int(round(float(point[1])))
+    digest = hashlib.sha1(image.tobytes()).hexdigest()[:12]
+    return f"{width}x{height}:{digest}"
 
-        if st.button("Reset coordinates to automatic values"):
-            for point, (x_key, y_key) in zip(
-                detected_corners, coordinate_keys
-            ):
-                st.session_state[x_key] = int(round(float(point[0])))
-                st.session_state[y_key] = int(round(float(point[1])))
 
-        names = ("Top-left", "Top-right", "Bottom-right", "Bottom-left")
-        points = []
-        with st.expander("Rectification corner coordinates", expanded=True):
-            st.caption(
-                "Values are filled automatically. Adjust them if the preview "
-                "does not follow the real chamber boundary."
+def _roi_selection_section(image: np.ndarray, config: dict) -> dict | None:
+    """Display a mouse-controlled ROI on the untouched original image."""
+    st.header("Dynamic ROI selection")
+    configured_width, configured_height = _processing_size(config)
+    configured_resolution = configured_width
+    candidates = (512, 640, 800, 992, 1024)
+    resolution_options = [f"{value} × {value}" for value in candidates] + ["Custom"]
+    configured_label = f"{configured_resolution} × {configured_resolution}"
+    default_index = (
+        resolution_options.index(configured_label)
+        if configured_label in resolution_options
+        else len(resolution_options) - 1
+    )
+    resolution_choice = st.selectbox(
+        "Processing resolution",
+        resolution_options,
+        index=default_index,
+        key="roi_processing_resolution_choice",
+        help=(
+            "Candidate values are experimental options, not a ranking of "
+            "scientific quality. The selected ROI remains unchanged."
+        ),
+    )
+    if resolution_choice == "Custom":
+        processing_resolution = int(
+            st.number_input(
+                "Custom square resolution (pixels)",
+                min_value=128,
+                max_value=2048,
+                value=configured_resolution,
+                step=32,
+                key="roi_custom_processing_resolution",
             )
-            for index, (name, (x_key, y_key)) in enumerate(
-                zip(names, coordinate_keys)
-            ):
-                columns = st.columns(2)
-                point_x = columns[0].number_input(
-                    f"{name} X",
-                    min_value=0,
-                    max_value=width - 1,
-                    step=1,
-                    key=x_key,
-                )
-                point_y = columns[1].number_input(
-                    f"{name} Y",
-                    min_value=0,
-                    max_value=height - 1,
-                    step=1,
-                    key=y_key,
-                )
-                points.append((float(point_x), float(point_y)))
-        rectification_points = points
+        )
+    else:
+        processing_resolution = int(resolution_choice.split(" ")[0])
+    target_size = (processing_resolution, processing_resolution)
+    st.caption(
+        f"The configured initial value is {configured_resolution} × "
+        f"{configured_resolution}. No candidate is assumed to be universally "
+        "best; use the comparison below to evaluate resolution and cost."
+    )
+    image_height, image_width = image.shape[:2]
+    source_key = _roi_source_key(image)
+    applied_settings = st.session_state["roi_settings_by_input"].get(source_key)
+    stored = (
+        applied_settings.get("roi_coordinates")
+        if applied_settings and applied_settings.get("roi_coordinates")
+        else applied_settings
+    )
+    if stored is None:
+        default = default_roi_coordinates(image, target_size)
+        stored = {
+            "x": default.x,
+            "y": default.y,
+            "width": default.width,
+            "height": default.height,
+        }
 
-        adjusted_corners = np.asarray(points, dtype=np.int32)
-        corner_preview = image.copy()
-        for index, (point, corner_label) in enumerate(
-            zip(adjusted_corners, ("TL", "TR", "BR", "BL"))
-        ):
-            x, y = int(point[0]), int(point[1])
-            next_point = adjusted_corners[(index + 1) % 4]
-            cv2.line(
-                corner_preview,
-                (x, y),
-                (int(next_point[0]), int(next_point[1])),
-                (0, 255, 255),
-                3,
-            )
-            cv2.circle(corner_preview, (x, y), 10, (0, 255, 255), -1)
-            cv2.putText(
-                corner_preview,
-                corner_label,
-                (x + 12, max(y - 12, 20)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-    settings = {
-        "rectification_points": rectification_points,
+    st.caption(
+        "Drag the ROI to move it and use its handles to resize it. The aspect "
+        "ratio is locked to 1:1. When the "
+        "selection is ready, click **Apply selected ROI**. The cropper and the "
+        "server-side boundary check prevent the ROI from extending outside "
+        "the original image. Display fitting does not resize source data."
+    )
+    rgb_image = Image.fromarray(_bgr_to_rgb(image))
+    box = st_cropper(
+        rgb_image,
+        realtime_update=True,
+        default_coords=(
+            int(stored["x"]),
+            int(stored["x"] + stored["width"]),
+            int(stored["y"]),
+            int(stored["y"] + stored["height"]),
+        ),
+        box_color="#FFFF00",
+        aspect_ratio=target_size,
+        return_type="box",
+        key=f"roi_cropper_{source_key}",
+        should_resize_image=True,
+        stroke_width=3,
+    )
+    preview_result = select_and_scale_roi(image, box, target_size)
+    coordinates = preview_result.coordinates
+    selected = {
+        "x": coordinates.x,
+        "y": coordinates.y,
+        "width": coordinates.width,
+        "height": coordinates.height,
     }
+    st.dataframe(
+        [
+            {
+                "Original image": f"{image_width} × {image_height}",
+                "ROI origin": f"({coordinates.x}, {coordinates.y})",
+                "ROI size": f"{coordinates.width} × {coordinates.height}",
+                "Processing size": f"{target_size[0]} × {target_size[1]}",
+                "Scale factor": round(preview_result.scale_x, 4),
+                "Operation": preview_result.scaling_operation.title(),
+            }
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+    if preview_result.scale_x >= 2.0:
+        st.warning(
+            "Large upscaling required. Additional pixels are interpolated "
+            "and do not represent additional original image detail."
+        )
+    if st.button("Apply selected ROI", type="primary", key=f"apply_roi_{source_key}"):
+        applied_settings = {
+            "roi_coordinates": selected,
+            "source_key": source_key,
+            "processing_size": target_size,
+            "is_custom": True,
+        }
+        st.session_state["roi_settings_by_input"][source_key] = applied_settings
+        st.success(
+            f"Applied ROI ({coordinates.x}, {coordinates.y}), "
+            f"{coordinates.width} × {coordinates.height} pixels."
+        )
+
+    if applied_settings is None:
+        st.info("Select a region and click **Apply selected ROI** to continue.")
+        return None
+
+    settings = applied_settings
+    # Keep the existing shared model-page context key so member UIs receive
+    # the same selected ROI without any model-specific changes.
+    st.session_state["calibration_settings"] = settings
+    return settings
+
+
+def _rectification_section(image: np.ndarray, roi_settings: dict) -> dict:
+    """Collect perspective-correction points relative to the extracted ROI."""
+    st.header("Perspective rectification")
+    target_size = tuple(int(value) for value in roi_settings["processing_size"])
+    selected_roi, coordinates = extract_roi(
+        image, roi_settings["roi_coordinates"], target_size
+    )
+    roi_height, roi_width = selected_roi.shape[:2]
+    detected_corners = detect_chamber_corners(selected_roi)
+    rectification_id = hashlib.sha1(
+        (
+            f"{roi_settings['source_key']}:"
+            f"{coordinates.x},{coordinates.y},"
+            f"{coordinates.width},{coordinates.height}"
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    coordinate_keys = [
+        (
+            f"roi_rectification_{rectification_id}_x_{index}",
+            f"roi_rectification_{rectification_id}_y_{index}",
+        )
+        for index in range(4)
+    ]
+    source_state_key = f"roi_rectification_source_{rectification_id}"
+    if not st.session_state.get(source_state_key):
+        st.session_state[source_state_key] = True
+        for point, (x_key, y_key) in zip(detected_corners, coordinate_keys):
+            st.session_state[x_key] = int(round(float(point[0])))
+            st.session_state[y_key] = int(round(float(point[1])))
+
+    if st.button(
+        "Reset rectification coordinates to automatic values",
+        key=f"reset_roi_rectification_{rectification_id}",
+    ):
+        for point, (x_key, y_key) in zip(detected_corners, coordinate_keys):
+            st.session_state[x_key] = int(round(float(point[0])))
+            st.session_state[y_key] = int(round(float(point[1])))
+
+    names = ("Top-left", "Top-right", "Bottom-right", "Bottom-left")
+    points = []
+    with st.expander("Rectification coordinates within selected ROI", expanded=True):
+        st.caption(
+            "Coordinates are relative to the extracted ROI, not the complete "
+            "source image. Automatic values may be adjusted manually."
+        )
+        for name, (x_key, y_key) in zip(names, coordinate_keys):
+            columns = st.columns(2)
+            point_x = columns[0].number_input(
+                f"{name} X",
+                min_value=0,
+                max_value=roi_width - 1,
+                step=1,
+                key=x_key,
+            )
+            point_y = columns[1].number_input(
+                f"{name} Y",
+                min_value=0,
+                max_value=roi_height - 1,
+                step=1,
+                key=y_key,
+            )
+            points.append((float(point_x), float(point_y)))
+
+    adjusted = np.asarray(points, dtype=np.int32)
+    boundary_preview = selected_roi.copy()
+    for index, (point, label) in enumerate(
+        zip(adjusted, ("TL", "TR", "BR", "BL"))
+    ):
+        next_point = adjusted[(index + 1) % 4]
+        cv2.line(boundary_preview, tuple(point), tuple(next_point), (0, 255, 255), 2)
+        cv2.circle(boundary_preview, tuple(point), 6, (0, 255, 255), -1)
+        cv2.putText(
+            boundary_preview,
+            label,
+            (int(point[0]) + 8, max(int(point[1]) - 8, 16)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
     try:
-        preview_image = rectify_image(image, rectification_points)
+        rectified_preview = rectify_image(
+            selected_roi, points, output_size=(roi_width, roi_height)
+        )
     except ValueError as error:
         st.error(str(error))
         st.stop()
     preview_columns = st.columns(2)
     preview_columns[0].image(
-        _bgr_to_rgb(corner_preview),
-        caption="Editable chamber boundary",
+        _bgr_to_rgb(boundary_preview),
+        caption="Selected ROI with rectification boundary",
         width=420,
     )
     preview_columns[1].image(
-        _bgr_to_rgb(preview_image),
-        caption="Perspective-rectified image",
+        _bgr_to_rgb(rectified_preview),
+        caption="Perspective-rectified ROI",
         width=420,
     )
-    st.session_state["calibration_settings"] = settings
-    return settings
+    return {
+        "rectification_points": points,
+        "rectification_output_size": (roi_width, roi_height),
+    }
+
+
+def _resolution_comparison_section(
+    image: np.ndarray,
+    applied_settings: dict,
+    config: dict,
+) -> None:
+    """Compare processing resolutions while holding the applied ROI constant."""
+    with st.expander("Compare processing resolutions using this ROI"):
+        st.caption(
+            "Every candidate uses the exact same original-image ROI. Detection "
+            "counts and processing time may be compared, but no accuracy is "
+            "inferred without ground-truth annotations."
+        )
+        candidates = st.multiselect(
+            "Candidate square resolutions",
+            options=[512, 640, 800, 992, 1024],
+            default=[512, 640, 800, 992, 1024],
+            format_func=lambda value: f"{value} × {value}",
+            key="roi_resolution_comparison_candidates",
+        )
+        source_key = _roi_source_key(image)
+        comparison_key = (
+            source_key,
+            tuple(sorted(applied_settings["roi_coordinates"].items())),
+            tuple(
+                tuple(float(value) for value in point)
+                for point in applied_settings.get("rectification_points", [])
+            ),
+        )
+        if st.button(
+            "Run resolution comparison",
+            disabled=not candidates,
+            key=f"compare_roi_resolution_{source_key}",
+        ):
+            rows = []
+            original_height, original_width = image.shape[:2]
+            for resolution in candidates:
+                candidate_settings = {
+                    "roi_coordinates": dict(applied_settings["roi_coordinates"]),
+                    "source_key": source_key,
+                    "processing_size": (int(resolution), int(resolution)),
+                    "rectification_points": applied_settings.get(
+                        "rectification_points"
+                    ),
+                    "rectification_output_size": applied_settings.get(
+                        "rectification_output_size"
+                    ),
+                }
+                started = perf_counter()
+                output = _process_pipeline_image(image, config, candidate_settings)
+                elapsed_ms = (perf_counter() - started) * 1000.0
+                metadata = output["spatial_scaling"]
+                rows.append(
+                    {
+                        "Original image": f"{original_width} × {original_height}",
+                        "ROI origin": f"({metadata['roi_x']}, {metadata['roi_y']})",
+                        "ROI size": f"{metadata['roi_width']} × {metadata['roi_height']}",
+                        "Resolution": int(resolution),
+                        "Target": f"{resolution} × {resolution}",
+                        "Scale factor": round(float(metadata["scale_factor"]), 4),
+                        "Operation": str(metadata["scaling_operation"]).title(),
+                        "Processing time (ms)": round(elapsed_ms, 2),
+                        "Detected contours": len(output["segmentation"].bounding_boxes),
+                    }
+                )
+            st.session_state["roi_resolution_comparison"] = {
+                "key": comparison_key,
+                "rows": rows,
+            }
+
+        comparison = st.session_state.get("roi_resolution_comparison")
+        if comparison and comparison.get("key") == comparison_key:
+            rows = comparison["rows"]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+            st.bar_chart(
+                [
+                    {
+                        "Resolution": str(row["Resolution"]),
+                        "Processing time (ms)": row["Processing time (ms)"],
+                    }
+                    for row in rows
+                ],
+                x="Resolution",
+                y="Processing time (ms)",
+                use_container_width=True,
+            )
 
 
 def _process_pipeline_image(
@@ -347,41 +564,96 @@ def _process_pipeline_image(
     calibration_settings: dict | None = None,
 ) -> dict:
     """Run the identical shared pipeline for one image without drawing UI."""
-    # The original orientation selects the appropriate dataset-specific ROI.
+    # Select from original pixels first. Enhancement never sees the complete
+    # source image or a longest-side-resized version of that image.
     profile_name = _detect_layout_profile(image)
-    analysis_image = image
     centimetres_per_pixel = None
-    rectified = False
-    if calibration_settings and calibration_settings.get(
-        "rectification_points"
-    ) is not None:
-        analysis_image = rectify_image(
-            image, calibration_settings["rectification_points"]
+    source_key = _roi_source_key(image)
+    saved_settings = st.session_state.get("roi_settings_by_input", {}).get(source_key)
+    if saved_settings is not None and "roi_coordinates" not in saved_settings:
+        # Backward compatibility for ROI state saved before the Apply button.
+        saved_settings = {
+            "roi_coordinates": saved_settings,
+            "source_key": source_key,
+        }
+    explicit_settings = calibration_settings
+    if (
+        explicit_settings
+        and explicit_settings.get("source_key") is not None
+        and explicit_settings.get("source_key") != source_key
+    ):
+        explicit_settings = None
+    roi_settings = explicit_settings or saved_settings
+    configured_size = _processing_size(config)
+    target_size = tuple(
+        int(value)
+        for value in (
+            roi_settings.get("processing_size", configured_size)
+            if roi_settings
+            else configured_size
+        )
+    )
+    requested_roi = (
+        roi_settings.get("roi_coordinates")
+        if roi_settings and roi_settings.get("roi_coordinates")
+        else default_roi_coordinates(image, target_size)
+    )
+    selected_roi_image, roi_coordinates = extract_roi(
+        image, requested_roi, target_size
+    )
+    rectification_points = (
+        roi_settings.get("rectification_points") if roi_settings else None
+    )
+    if rectification_points is not None:
+        rectified_roi_image, rectification_transform = rectify_image_with_transform(
+            selected_roi_image,
+            rectification_points,
+            output_size=(roi_coordinates.width, roi_coordinates.height),
         )
         rectified = True
-
-    rectified_image = analysis_image
-    normalisation_settings = config.get("spatial_normalisation", {})
-    normalisation = spatial_scale(
-        rectified_image,
-        int(normalisation_settings.get("target_longest_side", 1920)),
+    else:
+        rectified_roi_image = selected_roi_image.copy()
+        rectification_transform = np.eye(3, dtype=np.float32)
+        rectified = False
+    spatially_scaled_image, scale_x, scale_y = spatial_scale_roi(
+        rectified_roi_image, target_size
     )
-    spatially_scaled_image = normalisation.image
+    original_height, original_width = image.shape[:2]
+    roi_transform = RoiScalingResult(
+        image=spatially_scaled_image,
+        roi_image=selected_roi_image,
+        coordinates=roi_coordinates,
+        original_width=original_width,
+        original_height=original_height,
+        processing_width=target_size[0],
+        processing_height=target_size[1],
+        scale_x=scale_x,
+        scale_y=scale_y,
+    )
     analysis_image = spatially_scaled_image
 
     selected_profile = config["segmentation"]["roi_profiles"][profile_name]
-    roi_margins = {
-        side: selected_profile[side]
-        for side in ("left", "right", "top", "bottom")
-    }
+    is_custom_roi = roi_settings is not None and roi_settings.get("is_custom", False)
+    if is_custom_roi:
+        roi_margins = {side: 0.0 for side in ("left", "right", "top", "bottom")}
+    else:
+        roi_margins = {
+            side: float(selected_profile.get(side, 0.0))
+            for side in ("left", "right", "top", "bottom")
+        }
     segmentation_settings = {
         **config["segmentation"],
         **{
             name: value
             for name, value in selected_profile.items()
-            if name not in roi_margins
+            if name not in ("left", "right", "top", "bottom")
         },
     }
+    segmentation_settings = scale_pixel_parameters(
+        segmentation_settings,
+        int(config["spatial_scaling"].get("pixel_parameter_reference_size", 1920)),
+        target_size,
+    )
     enhancement = enhance_image(analysis_image, config["enhancement"])
     segmentation = segment_tracks(
         enhancement.enhanced,
@@ -399,9 +671,39 @@ def _process_pipeline_image(
         enhancement.enhanced,
         minimum_area=feature_minimum_area,
     )
+    original_boxes = []
+    inverse_rectification = np.linalg.inv(rectification_transform)
+    for x, y, width, height in segmentation.bounding_boxes:
+        rectified_points = np.asarray(
+            [
+                [x / roi_transform.scale_x, y / roi_transform.scale_y],
+                [(x + width) / roi_transform.scale_x, y / roi_transform.scale_y],
+                [
+                    (x + width) / roi_transform.scale_x,
+                    (y + height) / roi_transform.scale_y,
+                ],
+                [x / roi_transform.scale_x, (y + height) / roi_transform.scale_y],
+            ],
+            dtype=np.float32,
+        ).reshape(1, 4, 2)
+        roi_points = cv2.perspectiveTransform(
+            rectified_points, inverse_rectification
+        )[0]
+        minimum = roi_points.min(axis=0)
+        maximum = roi_points.max(axis=0)
+        original_boxes.append(
+            {
+                "x": roi_transform.coordinates.x + float(minimum[0]),
+                "y": roi_transform.coordinates.y + float(minimum[1]),
+                "width": float(maximum[0] - minimum[0]),
+                "height": float(maximum[1] - minimum[1]),
+            }
+        )
     return {
+        "original_image": image,
         "input_image": analysis_image,
-        "rectified_image": rectified_image,
+        "selected_roi_image": selected_roi_image,
+        "rectified_roi_image": rectified_roi_image,
         "spatially_scaled_image": spatially_scaled_image,
         "enhancement": enhancement,
         "segmentation": segmentation,
@@ -409,16 +711,274 @@ def _process_pipeline_image(
         "roi_profile": profile_name,
         "centimetres_per_pixel": centimetres_per_pixel,
         "rectified": rectified,
-        "spatial_normalisation": {
-            "target_longest_side": int(
-                normalisation_settings.get("target_longest_side", 1920)
-            ),
-            "scale": normalisation.scale,
-            "original_width": normalisation.original_width,
-            "original_height": normalisation.original_height,
-            "scaled_width": normalisation.scaled_width,
-            "scaled_height": normalisation.scaled_height,
+        "spatial_scaling": roi_transform.metadata(),
+        "rectification": {
+            "applied": rectified,
+            "points_roi_coordinates": rectification_points,
+            "source_to_rectified_homography": rectification_transform.tolist(),
         },
+        "original_bounding_boxes": original_boxes,
+    }
+def _automatic_rectification_section(image: np.ndarray) -> dict:
+    """Estimate and allow correction of full-image perspective coordinates."""
+    st.header("Perspective rectification")
+    height, width = image.shape[:2]
+    source_key = _roi_source_key(image)
+    detected = detect_chamber_corners(image)
+    state_prefix = f"full_rectification_{source_key}"
+    keys = [(f"{state_prefix}_x_{index}", f"{state_prefix}_y_{index}") for index in range(4)]
+    initialised_key = f"{state_prefix}_initialised"
+    if not st.session_state.get(initialised_key):
+        for point, (x_key, y_key) in zip(detected, keys, strict=True):
+            st.session_state[x_key] = int(round(float(point[0])))
+            st.session_state[y_key] = int(round(float(point[1])))
+        st.session_state[initialised_key] = True
+    if st.button("Reset rectification coordinates to automatic values", key=f"reset_{state_prefix}"):
+        for point, (x_key, y_key) in zip(detected, keys, strict=True):
+            st.session_state[x_key] = int(round(float(point[0])))
+            st.session_state[y_key] = int(round(float(point[1])))
+
+    points = []
+    with st.expander("Rectification coordinates", expanded=False):
+        st.caption(
+            "Automatic corner values apply to the complete image processing copy. "
+            "They remain editable when the estimated boundary needs correction."
+        )
+        for label, (x_key, y_key) in zip(
+            ("Top-left", "Top-right", "Bottom-right", "Bottom-left"), keys, strict=True
+        ):
+            columns = st.columns(2)
+            x_value = columns[0].number_input(
+                f"{label} X", 0, width - 1, step=1, key=x_key
+            )
+            y_value = columns[1].number_input(
+                f"{label} Y", 0, height - 1, step=1, key=y_key
+            )
+            points.append((float(x_value), float(y_value)))
+
+    boundary = image.copy()
+    integer_points = np.asarray(points, dtype=np.int32)
+    for index, label in enumerate(("TL", "TR", "BR", "BL")):
+        point = integer_points[index]
+        following = integer_points[(index + 1) % 4]
+        cv2.line(boundary, tuple(point), tuple(following), (0, 255, 255), 2)
+        cv2.circle(boundary, tuple(point), 6, (0, 255, 255), -1)
+        cv2.putText(
+            boundary, label, (int(point[0]) + 8, max(16, int(point[1]) - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2, cv2.LINE_AA,
+        )
+    try:
+        rectified = rectify_image(image, points, output_size=(width, height))
+    except ValueError as error:
+        st.error(str(error))
+        st.stop()
+    columns = st.columns(2)
+    columns[0].image(_bgr_to_rgb(boundary), caption="Automatic rectification boundary", width=420)
+    columns[1].image(_bgr_to_rgb(rectified), caption="Rectified processing copy", width=420)
+    return {"rectification_points": points, "source_key": source_key}
+
+
+def _map_tile_intensity_to_image(
+    processed: np.ndarray, tile, destination_sum: np.ndarray, destination_count: np.ndarray
+) -> None:
+    """Accumulate one processed intensity image in full-image coordinates."""
+    item = tile.metadata
+    valid_width = max(1, int(round(item.original_tile_width * item.scale_x)))
+    valid_height = max(1, int(round(item.original_tile_height * item.scale_y)))
+    valid = processed[:valid_height, :valid_width]
+    mapped = cv2.resize(
+        valid, (item.original_tile_width, item.original_tile_height),
+        interpolation=cv2.INTER_LINEAR,
+    ).astype(np.float32)
+    destination_sum[item.y_start:item.y_end, item.x_start:item.x_end] += mapped
+    destination_count[item.y_start:item.y_end, item.x_start:item.x_end] += 1.0
+
+
+def _process_tiled_pipeline_image(
+    image: np.ndarray,
+    config: dict,
+    calibration_settings: dict | None = None,
+) -> dict:
+    """Analyse every source pixel through overlapping standardized tiles."""
+    original = image
+    original_height, original_width = original.shape[:2]
+    settings = calibration_settings or {}
+    rectification_points = settings.get("rectification_points")
+    if rectification_points is not None:
+        processing_copy, rectification_transform = rectify_image_with_transform(
+            original, rectification_points, output_size=(original_width, original_height)
+        )
+        rectified = True
+    else:
+        processing_copy = original.copy()
+        rectification_transform = np.eye(3, dtype=np.float32)
+        rectified = False
+
+    scaling_config = config["spatial_scaling"]
+    target_size = _processing_size(config)
+    tile_size = int(scaling_config["tile_size"])
+    overlap_ratio = float(scaling_config["overlap_ratio"])
+    tiles = generate_overlapping_tiles(
+        processing_copy, tile_size, target_size, overlap_ratio
+    )
+    coverage = coverage_map(processing_copy.shape, tiles)
+    if int(coverage.min()) < 1:
+        raise RuntimeError("Automatic tiling left uncovered image pixels")
+
+    profile_name = _detect_layout_profile(original)
+    selected_profile = config["segmentation"]["roi_profiles"][profile_name]
+    segmentation_settings = {
+        **config["segmentation"],
+        **{
+            name: value for name, value in selected_profile.items()
+            if name not in ("left", "right", "top", "bottom")
+        },
+    }
+    segmentation_settings = scale_pixel_parameters(
+        segmentation_settings,
+        int(scaling_config.get("pixel_parameter_reference_size", 1920)),
+        target_size,
+    )
+    tile_margins = {
+        side: float(selected_profile.get(side, 0.0))
+        for side in ("left", "right", "top", "bottom")
+    }
+    masks = []
+    intermediate_masks: dict[str, list[np.ndarray]] = {}
+    sums = {name: np.zeros(processing_copy.shape[:2], dtype=np.float32) for name in ("grey", "denoised", "enhanced")}
+    counts = np.zeros(processing_copy.shape[:2], dtype=np.float32)
+    total_processing_ms = 0.0
+    tile_previews = []
+    for tile in tiles:
+        scaled_tile, _, _ = spatial_scale_tile(tile.image, target_size)
+        enhancement = enhance_image(scaled_tile, config["enhancement"])
+        segmentation = segment_tracks(
+            enhancement.enhanced, segmentation_settings, tile_margins
+        )
+        masks.append(segmentation.binary_mask)
+        total_processing_ms += segmentation.processing_time_ms
+        for name, intermediate in segmentation.intermediate_images.items():
+            intermediate_masks.setdefault(name, []).append(intermediate)
+        local_count = np.zeros_like(counts)
+        for name in sums:
+            _map_tile_intensity_to_image(
+                getattr(enhancement, name), tile, sums[name], local_count
+            )
+        counts += (local_count > 0).astype(np.float32)
+        if len(tile_previews) < 4:
+            tile_previews.append(scaled_tile)
+
+    safe_counts = np.maximum(counts, 1.0)
+    merged_enhancement = EnhancementResult(
+        grey=np.clip(sums["grey"] / safe_counts, 0, 255).astype(np.uint8),
+        denoised=np.clip(sums["denoised"] / safe_counts, 0, 255).astype(np.uint8),
+        enhanced=np.clip(sums["enhanced"] / safe_counts, 0, 255).astype(np.uint8),
+    )
+    merged_mask = merge_tile_masks(processing_copy.shape, masks, tiles)
+    merged_intermediate = {
+        name: merge_tile_masks(processing_copy.shape, values, tiles)
+        for name, values in intermediate_masks.items()
+    }
+    contours, _ = cv2.findContours(
+        merged_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+    )
+    bounding_boxes = [cv2.boundingRect(contour) for contour in contours]
+    merged_segmentation = SegmentationResult(
+        method_name="Overlapping tiles + " + segmentation.method_name,
+        binary_mask=merged_mask,
+        bounding_boxes=bounding_boxes,
+        contours=contours,
+        processing_time_ms=total_processing_ms,
+        intermediate_images=merged_intermediate,
+        parameters={
+            **segmentation_settings,
+            "tile_count": len(tiles),
+            "tile_size": tile_size,
+            "overlap_ratio": overlap_ratio,
+        },
+    )
+    feature_minimum_area = float(segmentation_settings["minimum_object_area"])
+    if segmentation_settings.get("enable_thin_track_rule", True):
+        feature_minimum_area = min(
+            feature_minimum_area, float(segmentation_settings["minimum_thin_area"])
+        )
+    features = extract_track_features(
+        merged_mask, merged_enhancement.enhanced, feature_minimum_area
+    )
+    # Geometry is reported in the standardized tile-processing scale used by
+    # every classifier, while bounding boxes remain in full-image coordinates.
+    feature_scale = target_size[0] / float(tile_size)
+    features = [
+        replace(
+            item,
+            area_pixels=item.area_pixels * feature_scale * feature_scale,
+            perimeter_pixels=item.perimeter_pixels * feature_scale,
+            major_axis_pixels=item.major_axis_pixels * feature_scale,
+            mean_width_pixels=item.mean_width_pixels * feature_scale,
+            thickness_pixels=item.thickness_pixels * feature_scale,
+        )
+        for item in features
+    ]
+
+    inverse_rectification = np.linalg.inv(rectification_transform)
+    original_boxes = []
+    for x, y, width, height in bounding_boxes:
+        points = np.asarray(
+            [[x, y], [x + width, y], [x + width, y + height], [x, y + height]],
+            dtype=np.float32,
+        ).reshape(1, 4, 2)
+        mapped = cv2.perspectiveTransform(points, inverse_rectification)[0]
+        minimum, maximum = mapped.min(axis=0), mapped.max(axis=0)
+        minimum_x = float(np.clip(minimum[0], 0, original_width - 1))
+        minimum_y = float(np.clip(minimum[1], 0, original_height - 1))
+        maximum_x = float(np.clip(maximum[0], 0, original_width - 1))
+        maximum_y = float(np.clip(maximum[1], 0, original_height - 1))
+        original_boxes.append({
+            "x": minimum_x,
+            "y": minimum_y,
+            "width": max(0.0, maximum_x - minimum_x),
+            "height": max(0.0, maximum_y - minimum_y),
+        })
+    tile_metadata = [tile.metadata.to_dict() for tile in tiles]
+    scale_factor = target_size[0] / float(tile_size)
+    return {
+        "original_image": original,
+        "input_image": processing_copy,
+        "selected_roi_image": processing_copy,
+        "rectified_roi_image": processing_copy,
+        "spatially_scaled_image": tile_previews[0] if tile_previews else processing_copy,
+        "enhancement": merged_enhancement,
+        "segmentation": merged_segmentation,
+        "features": features,
+        "roi_profile": profile_name,
+        "centimetres_per_pixel": None,
+        "rectified": rectified,
+        "spatial_scaling": {
+            "method": "automatic_overlapping_tiling",
+            "original_image_width": original_width,
+            "original_image_height": original_height,
+            "tile_count": len(tiles),
+            "tile_size": tile_size,
+            "overlap_ratio": overlap_ratio,
+            "processing_width": target_size[0],
+            "processing_height": target_size[1],
+            "processing_resolution": f"{target_size[0]} × {target_size[1]}",
+            "scale_factor": scale_factor,
+            "scale_x": scale_factor,
+            "scale_y": scale_factor,
+            "scaling_operation": "none" if scale_factor == 1 else ("upscale" if scale_factor > 1 else "downscale"),
+            "minimum_coverage": int(coverage.min()),
+            "maximum_coverage": int(coverage.max()),
+        },
+        "rectification": {
+            "applied": rectified,
+            "points_original_coordinates": rectification_points,
+            "source_to_rectified_homography": rectification_transform.tolist(),
+        },
+        "tile_metadata": tile_metadata,
+        "coverage_map": coverage,
+        "tile_boundary_preview": draw_tile_boundaries(processing_copy, tiles),
+        "original_bounding_boxes": original_boxes,
     }
 
 

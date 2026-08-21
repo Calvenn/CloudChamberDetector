@@ -88,7 +88,7 @@
         "balanced_accuracy": 0.668225154528059,
         "macro_f1": 0.6383273134918213,
         "weighted_f1": 0.705992396744317,
-        "mean_inference_ms_per_track": 0.000627891152892304,
+        "mean_inference_ms_per_track": 0.0006477324253258606,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -274,7 +274,7 @@
         "balanced_accuracy": 0.6534770628273414,
         "macro_f1": 0.6243660259427769,
         "weighted_f1": 0.6928726170617617,
-        "mean_inference_ms_per_track": 0.00438526076900344,
+        "mean_inference_ms_per_track": 0.0009498866195098841,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -367,7 +367,7 @@
         "balanced_accuracy": 0.6534770628273414,
         "macro_f1": 0.6243660259427769,
         "weighted_f1": 0.6928726170617617,
-        "mean_inference_ms_per_track": 0.0015492063490072025,
+        "mean_inference_ms_per_track": 0.0016773242649649716,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -461,7 +461,7 @@
         "balanced_accuracy": 0.6720184138255796,
         "macro_f1": 0.643450944362828,
         "weighted_f1": 0.7142727512284375,
-        "mean_inference_ms_per_track": 0.0021236961389508504,
+        "mean_inference_ms_per_track": 0.002257142860673119,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -555,7 +555,7 @@
         "balanced_accuracy": 0.6707163304922463,
         "macro_f1": 0.6418450129356547,
         "weighted_f1": 0.7122838063624187,
-        "mean_inference_ms_per_track": 0.0016777777831574856,
+        "mean_inference_ms_per_track": 0.0014619047651484465,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -644,7 +644,7 @@
     "balanced_accuracy": 0.7705475826969495,
     "macro_f1": 0.7035587986628697,
     "weighted_f1": 0.8071593630503089,
-    "mean_inference_ms_per_track": 0.0018386407760966532,
+    "mean_inference_ms_per_track": 0.00240757280974242,
     "class_names": [
       "alpha",
       "electron_positron",
