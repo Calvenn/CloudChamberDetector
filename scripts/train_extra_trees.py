@@ -315,6 +315,20 @@ def evaluate(
     predictions = model.predict(matrix)
     elapsed_ms = (perf_counter() - started) * 1000.0
 
+    # Measure each true particle class as its own batch. Dividing the batch
+    # duration by its track count produces class-specific throughput values
+    # that are comparable with the overall mean inference time.
+    per_class_inference = {}
+    for class_name in class_names:
+        class_matrix = matrix[labels == class_name]
+        class_started = perf_counter()
+        if len(class_matrix):
+            model.predict(class_matrix)
+        class_elapsed_ms = (perf_counter() - class_started) * 1000.0
+        per_class_inference[class_name] = (
+            class_elapsed_ms / len(class_matrix) if len(class_matrix) else None
+        )
+
     cm = confusion_matrix(
         labels,
         predictions,
@@ -352,6 +366,7 @@ def evaluate(
             )
         ),
         "mean_inference_ms_per_track": elapsed_ms / max(len(labels), 1),
+        "mean_inference_ms_per_track_by_class": per_class_inference,
         "class_names": class_names,
         "confusion_matrix": cm.tolist(),
         "classification_report": report,

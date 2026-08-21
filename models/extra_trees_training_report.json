@@ -709,7 +709,13 @@
     "balanced_accuracy": 0.6764122345324606,
     "macro_f1": 0.6634815112253994,
     "weighted_f1": 0.7677319582286972,
-    "mean_inference_ms_per_track": 0.03231394557814777,
+    "mean_inference_ms_per_track": 0.03188741496422137,
+    "mean_inference_ms_per_track_by_class": {
+      "alpha": 0.0759289062462661,
+      "electron_positron": 0.09730542372735572,
+      "proton": 0.36002926829430026,
+      "v_track": 0.24069421486589915
+    },
     "class_names": [
       "alpha",
       "electron_positron",
@@ -788,7 +794,13 @@
     "balanced_accuracy": 0.7672120660616927,
     "macro_f1": 0.7740168536789312,
     "weighted_f1": 0.8464360753276813,
-    "mean_inference_ms_per_track": 0.05618612716776179,
+    "mean_inference_ms_per_track": 0.05415394990171664,
+    "mean_inference_ms_per_track_by_class": {
+      "alpha": 0.2429258064576941,
+      "electron_positron": 0.13617087379051315,
+      "proton": 0.16686470588705132,
+      "v_track": 1.5292473684607295
+    },
     "class_names": [
       "alpha",
       "electron_positron",

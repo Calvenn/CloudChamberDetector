@@ -892,6 +892,90 @@ def _extra_trees_page() -> None:
             "test data."
         )
 
+        # Report-ready tables matching Section 4.1.2 of the assignment.
+        # Precision, recall and F1 are macro averages in the model row. The
+        # saved report records one overall mean inference time rather than a
+        # separate timing measurement for every class.
+        with st.expander("View report-ready final-test tables", expanded=True):
+            st.subheader("Extreme Random Tree - Model Configuration")
+            macro_result = final_test["classification_report"]["macro avg"]
+            model_configuration = (
+                f"{selected_candidate.get('n_estimators', '-')} trees, "
+                f"maximum depth = {selected_candidate.get('max_depth', '-')}, "
+                f"minimum split = "
+                f"{selected_candidate.get('min_samples_split', '-')}, "
+                f"maximum features = "
+                f"{selected_candidate.get('max_features', '-')}, "
+                f"class weight = "
+                f"{selected_candidate.get('class_weight', '-')}"
+                if selected_candidate
+                else "Selected Extra Trees configuration"
+            )
+            processing_time = float(
+                final_test.get("mean_inference_ms_per_track", 0.0)
+            )
+            model_table = pd.DataFrame(
+                [
+                    {
+                        "Model Configuration": model_configuration,
+                        "Accuracy": f"{float(final_test['accuracy']):.2%}",
+                        "Precision": f"{float(macro_result['precision']):.2%}",
+                        "Recall": f"{float(macro_result['recall']):.2%}",
+                        "F1-score": f"{float(macro_result['f1-score']):.2%}",
+                        "Processing Time": f"{processing_time:.3f} ms/track",
+                    }
+                ]
+            )
+            st.dataframe(model_table, use_container_width=True, hide_index=True)
+
+            st.subheader("Extreme Random Tree - Per-Class Performance")
+            confusion = np.asarray(final_test["confusion_matrix"], dtype=np.int64)
+            total_samples = int(confusion.sum())
+            class_table = []
+            display_names = {
+                "alpha": "Alpha",
+                "electron_positron": "Electron/Positron",
+                "proton": "Proton",
+                "v_track": "V-track",
+            }
+            class_processing_times = final_test.get(
+                "mean_inference_ms_per_track_by_class", {}
+            )
+            for class_index, class_name in enumerate(final_test["class_names"]):
+                class_result = final_test["classification_report"][class_name]
+                true_positive = int(confusion[class_index, class_index])
+                false_negative = int(confusion[class_index, :].sum()) - true_positive
+                false_positive = int(confusion[:, class_index].sum()) - true_positive
+                true_negative = (
+                    total_samples - true_positive - false_negative - false_positive
+                )
+                one_vs_rest_accuracy = (
+                    (true_positive + true_negative) / total_samples
+                    if total_samples
+                    else 0.0
+                )
+                class_table.append(
+                    {
+                        "Predicted": display_names.get(class_name, class_name),
+                        "Accuracy": f"{one_vs_rest_accuracy:.2%}",
+                        "Precision": f"{float(class_result['precision']):.2%}",
+                        "Recall": f"{float(class_result['recall']):.2%}",
+                        "F1-score": f"{float(class_result['f1-score']):.2%}",
+                        "Processing Time": (
+                            f"{float(class_processing_times[class_name]):.3f} ms/track"
+                            if class_processing_times.get(class_name) is not None
+                            else "Run training to calculate"
+                        ),
+                    }
+                )
+            st.dataframe(class_table, use_container_width=True, hide_index=True)
+            st.caption(
+                "Overall precision, recall and F1-score are macro averages. "
+                "Per-class accuracy uses one-versus-rest calculation. The "
+                "processing time for each class is the mean inference time of "
+                "its final-test tracks."
+            )
+
 
         # =================================================
         # MODEL TUNING EXTRA EFFORT
