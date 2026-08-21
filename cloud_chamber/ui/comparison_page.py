@@ -50,9 +50,9 @@ def _comparison_sample_count(results: dict[str, dict]) -> int | None:
 def render() -> None:
     st.title("Final Model Comparison")
     st.caption(
-        "A fair comparison uses the same untouched final-test samples and the "
-        "same metrics. Macro F1 is the primary ranking measure because every "
-        "particle class contributes equally."
+        "All five available final-test reports are compared descriptively. "
+        "Macro F1 is the primary ranking measure because every particle class "
+        "contributes equally."
     )
 
     results, problems = _load_results()
@@ -60,40 +60,33 @@ def render() -> None:
         st.warning("No final-test reports are available yet.")
         return
 
-    comparison_count = _comparison_sample_count(results)
-    comparable = {
-        name: result
-        for name, result in results.items()
-        if int(result["sample_count"]) == comparison_count
-    }
-    excluded = {
-        name: result
-        for name, result in results.items()
-        if int(result["sample_count"]) != comparison_count
-    }
+    _render_executive_overview(results)
 
-    status_rows = []
-    for model_name in REPORTS:
-        if model_name in comparable:
-            status = "Comparable"
-            sample_count = comparison_count
-        elif model_name in excluded:
-            sample_count = int(excluded[model_name]["sample_count"])
-            status = f"Excluded: expected {comparison_count} test tracks"
-        else:
-            sample_count = "—"
-            status = problems.get(model_name, "Report unavailable")
-        status_rows.append(
-            {"Model": model_name, "Final-test tracks": sample_count, "Status": status}
+    # The project report requests a descriptive comparison of every available
+    # model. Unequal cohort sizes are disclosed below but do not hide a model.
+    comparable = dict(results)
+
+    class_signatures = {
+        name: tuple(result.get("class_names", [])) for name, result in results.items()
+    }
+    fully_aligned = (
+        len(results) == len(REPORTS)
+        and len({int(item["sample_count"]) for item in results.values()}) == 1
+        and len(set(class_signatures.values())) == 1
+        and not problems
+    )
+    if not fully_aligned:
+        st.warning(
+            "All five models are shown, but this is a descriptive comparison: "
+            "their final-test track counts differ, and CNN does not report V-track. "
+            "The highest reported score may be stated, but the comparison is not "
+            "a strictly controlled evaluation on one identical test cohort."
         )
-
-    st.subheader("Comparison validity")
-    st.dataframe(status_rows, use_container_width=True, hide_index=True)
 
     winner_name, winner_result = max(
         comparable.items(), key=lambda item: float(item[1]["macro_f1"])
     )
-    definitive = len(comparable) == len(REPORTS) and not problems and not excluded
+    definitive = fully_aligned
     if definitive:
         st.success(
             f"Best overall model: {winner_name} — final-test Macro F1 "
@@ -101,10 +94,9 @@ def render() -> None:
         )
     else:
         st.info(
-            f"Current provisional leader: {winner_name} — Macro F1 "
-            f"{winner_result['macro_f1']:.3f} among the {len(comparable)} models "
-            f"evaluated on {comparison_count} tracks. A definitive winner requires "
-            "all five models to use exactly the same final-test set."
+            f"Highest reported result: {winner_name} — Macro F1 "
+            f"{winner_result['macro_f1']:.3f} across the five available reports. "
+            "Interpret this as a descriptive result because cohort sizes differ."
         )
 
     ranked = sorted(
@@ -142,7 +134,69 @@ def render() -> None:
     _render_metric_chart(comparable)
     _render_recall_heatmap(comparable)
     _render_processing_chart(comparable)
+    _render_tradeoff_chart(results)
+    _render_automatic_findings(results, comparable, definitive)
     _render_confusion_matrices(comparable)
+
+
+def _render_executive_overview(results: dict[str, dict]) -> None:
+    """Show every reported result while clearly separating it from fair ranking."""
+    st.subheader("Five-model reported-results overview")
+    st.caption(
+        "This table is useful for checking the current outputs, but rows with "
+        "different test counts or class sets must not be treated as a fair ranking."
+    )
+    rows = []
+    for model_name in REPORTS:
+        result = results.get(model_name)
+        if result is None:
+            continue
+        rows.append(
+            {
+                "Model": model_name,
+                "Tracks": int(result["sample_count"]),
+                "Classes": len(result.get("class_names", [])),
+                "Accuracy": float(result["accuracy"]),
+                "Balanced accuracy": float(result["balanced_accuracy"]),
+                "Macro F1": float(result["macro_f1"]),
+                "Weighted F1": float(result["weighted_f1"]),
+                "Time/track (ms)": result.get("mean_inference_ms_per_track"),
+            }
+        )
+    st.dataframe(
+        rows,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Accuracy": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0, format="%.3f"),
+            "Balanced accuracy": st.column_config.NumberColumn(format="%.3f"),
+            "Macro F1": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0, format="%.3f"),
+            "Weighted F1": st.column_config.NumberColumn(format="%.3f"),
+            "Time/track (ms)": st.column_config.NumberColumn(format="%.4f"),
+        },
+    )
+
+    highest_reported = max(results.items(), key=lambda item: float(item[1]["macro_f1"]))
+    fastest = [
+        (name, result) for name, result in results.items()
+        if result.get("mean_inference_ms_per_track") is not None
+    ]
+    columns = st.columns(3)
+    columns[0].metric("Models reported", f"{len(results)} / {len(REPORTS)}")
+    columns[1].metric(
+        "Highest reported Macro F1",
+        f"{highest_reported[1]['macro_f1']:.3f}",
+        highest_reported[0],
+    )
+    if fastest:
+        fastest_name, fastest_result = min(
+            fastest, key=lambda item: float(item[1]["mean_inference_ms_per_track"])
+        )
+        columns[2].metric(
+            "Fastest reported inference",
+            f"{float(fastest_result['mean_inference_ms_per_track']):.4f} ms",
+            fastest_name,
+        )
 
 
 def _render_metric_chart(results: dict[str, dict]) -> None:
@@ -177,7 +231,11 @@ def _render_recall_heatmap(results: dict[str, dict]) -> None:
     class_names = ["alpha", "electron_positron", "proton", "v_track"]
     values = [
         [
-            float(results[model]["classification_report"][class_name]["recall"])
+            (
+                float(results[model]["classification_report"][class_name]["recall"])
+                if class_name in results[model].get("classification_report", {})
+                else None
+            )
             for class_name in class_names
         ]
         for model in model_names
@@ -190,7 +248,10 @@ def _render_recall_heatmap(results: dict[str, dict]) -> None:
             zmin=0,
             zmax=1,
             colorscale="Blues",
-            text=[[f"{value:.3f}" for value in row] for row in values],
+            text=[
+                [f"{value:.3f}" if value is not None else "N/A" for value in row]
+                for row in values
+            ],
             texttemplate="%{text}",
             colorbar={"title": "Recall"},
             hovertemplate="Model: %{y}<br>Class: %{x}<br>Recall: %{z:.3f}<extra></extra>",
@@ -236,6 +297,80 @@ def _render_processing_chart(results: dict[str, dict]) -> None:
     ]
     if missing:
         st.caption(f"Timing not recorded for: {', '.join(missing)}.")
+
+
+def _render_tradeoff_chart(results: dict[str, dict]) -> None:
+    """Relate balanced class performance to inference cost."""
+    timed = {
+        name: result for name, result in results.items()
+        if result.get("mean_inference_ms_per_track") is not None
+    }
+    if not timed:
+        return
+    figure = go.Figure()
+    for name, result in timed.items():
+        figure.add_trace(
+            go.Scatter(
+                x=[float(result["mean_inference_ms_per_track"])],
+                y=[float(result["macro_f1"])],
+                mode="markers+text",
+                text=[name],
+                textposition="top center",
+                marker={"size": 15},
+                name=name,
+                hovertemplate=(
+                    f"{name}<br>Macro F1: %{{y:.3f}}<br>"
+                    "Time/track: %{x:.4f} ms<extra></extra>"
+                ),
+            )
+        )
+    figure.update_layout(
+        title="Reported accuracy–speed trade-off",
+        xaxis_title="Mean inference time per track (ms; lower is better)",
+        yaxis={"title": "Macro F1 (higher is better)", "range": [0, 1]},
+        showlegend=False,
+    )
+    st.plotly_chart(figure, use_container_width=True)
+    st.caption(
+        "This trade-off chart uses each report's current cohort and is descriptive "
+        "until all five models are reevaluated on the same frozen final-test table."
+    )
+
+
+def _render_automatic_findings(
+    results: dict[str, dict], comparable: dict[str, dict], definitive: bool
+) -> None:
+    """Translate the charts into short, evidence-based statements."""
+    st.subheader("Key findings")
+    reported_best_name, reported_best = max(
+        results.items(), key=lambda item: float(item[1]["macro_f1"])
+    )
+    findings = [
+        f"{reported_best_name} has the highest currently reported Macro F1 "
+        f"({float(reported_best['macro_f1']):.3f}), but this is not yet proof "
+        "that it is the best model because the evaluation cohorts differ."
+    ]
+    if comparable:
+        cohort_best_name, cohort_best = max(
+            comparable.items(), key=lambda item: float(item[1]["macro_f1"])
+        )
+        findings.append(
+            f"Across all five reported results, {cohort_best_name} has the "
+            f"highest Macro F1 ({float(cohort_best['macro_f1']):.3f})."
+        )
+    findings.append(
+        "Macro F1 is the primary selection metric because it gives equal "
+        "importance to Alpha, Electron/Positron, Proton and V-track despite "
+        "their unequal sample frequencies."
+    )
+    findings.append(
+        "For the university report, describe this as the highest reported model; "
+        "also state that different sample counts limit direct experimental fairness."
+    )
+    for finding in findings:
+        st.markdown(f"- {finding}")
+    if definitive:
+        st.success("The five reports are aligned; the displayed winner is definitive.")
 
 
 def _render_confusion_matrices(results: dict[str, dict]) -> None:

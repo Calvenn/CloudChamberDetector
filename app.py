@@ -1,4 +1,4 @@
-"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
+﻿"""Streamlit GUI for the corrected Mode A cloud-chamber pipeline."""
 
 from __future__ import annotations
 
@@ -34,7 +34,8 @@ from cloud_chamber.ml.member_models.extra_trees import (
     encode_report_png as encode_extra_trees_report_png,
     load_model as load_extra_trees_model,
     predict_tracks as predict_extra_trees_tracks,
-    summarise_predictions as summarise_extra_trees_predictions,
+    summarise_predictions as summarise_extra_trees_predictions
+)
 from cloud_chamber.models import EnhancementResult, SegmentationResult
 from cloud_chamber.segmentation import scale_pixel_parameters, segment_tracks
 from cloud_chamber.tiling import (
@@ -2724,8 +2725,9 @@ def _comparison_page() -> None:
                 )
 
 
-def _feature_row(item) -> dict:
-    return {
+def _feature_row(item, centimetres_per_pixel: float | None = None) -> dict:
+    """Convert one contour feature object into a display-table row."""
+    row = {
         "Track": item.track_id,
         "Area (pxÂ²)": round(item.area_pixels, 3),
         "Perimeter (px)": round(item.perimeter_pixels, 3),
@@ -2738,6 +2740,18 @@ def _feature_row(item) -> dict:
         "Orientation (Â°)": round(item.orientation_degrees, 3),
         "Mean intensity": round(item.mean_intensity, 3),
     }
+    if centimetres_per_pixel is not None:
+        scale = float(centimetres_per_pixel)
+        row.update(
+            {
+                "Area (cm²)": round(item.area_pixels * scale * scale, 6),
+                "Perimeter (cm)": round(item.perimeter_pixels * scale, 6),
+                "Length (cm)": round(item.major_axis_pixels * scale, 6),
+                "Width (cm)": round(item.mean_width_pixels * scale, 6),
+                "Thickness (cm)": round(item.thickness_pixels * scale, 6),
+            }
+        )
+    return row
 
 
 def _set_input(image: np.ndarray, name: str, description: str) -> None:

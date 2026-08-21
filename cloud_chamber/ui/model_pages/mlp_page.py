@@ -1,4 +1,5 @@
 """MLP Streamlit page and report components."""
+import json
 from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
@@ -58,6 +59,7 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         st.warning(f"Train the model first: `{train_command}`")
         return
     model_bundle = model_loader(model_path)
+    _render_mlp_model_performance(Path("models/mlp_training_report.json"))
     confidence_threshold = st.slider(
         "Confidence reporting threshold",
         min_value=0.0,
@@ -328,14 +330,68 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
     )
 
     st.subheader("Annotated classification overview")
+    particle_options = [
+        DISPLAY_NAMES.get(str(class_name), str(class_name))
+        for class_name in model_bundle["classes"]
+    ]
+    selected_particles = st.multiselect(
+        "Show particle types",
+        options=particle_options,
+        default=particle_options,
+        key=f"mlp_particle_filter_{st.session_state['input_name']}",
+        help="The filter changes only this visualisation; model predictions remain unchanged.",
+    )
+    selected_indices = [
+        index for index, prediction in enumerate(predictions)
+        if prediction["particle_type"] in selected_particles
+    ]
+    filtered_features = [result["features"][index] for index in selected_indices]
+    filtered_predictions = [predictions[index] for index in selected_indices]
+    filtered_quality = [quality_assessments[index] for index in selected_indices]
+    source_boxes = result.get("original_bounding_boxes")
+    filtered_boxes = (
+        [source_boxes[index] for index in selected_indices]
+        if source_boxes is not None
+        else None
+    )
+    filtered_overlay, filtered_rows = model_viz(
+        image=result.get("original_image", result["input_image"]),
+        features=filtered_features,
+        predictions=filtered_predictions,
+        confidence_threshold=confidence_threshold,
+        quality_assessments=filtered_quality,
+        original_boxes=filtered_boxes,
+    )
     st.image(
-        context.bgr_to_rgb(overlay),
+        context.bgr_to_rgb(filtered_overlay),
+    )
+    st.caption(
+        f"Showing {len(filtered_rows)} of {len(report_rows)} classified tracks."
     )
     st.markdown(
         "**Legend:** 🟧 Alpha · 🟦 Electron/Positron · 🟩 Proton · "
         "🟪 V-track · 🟨 Uncertain · Grey dashed: review segmentation"
     )
-    st.dataframe(report_rows, use_container_width=True, hide_index=True)
+    compact_rows = [
+        {
+            "Track": row["Track"],
+            "Particle": row["Particle type"],
+            "Confidence": row["Confidence"],
+            "Decision": row.get("Reporting decision", row["Status"]),
+            "Contour quality": row["Contour quality"],
+        }
+        for row in filtered_rows
+    ]
+    st.dataframe(
+        compact_rows,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Confidence": st.column_config.ProgressColumn(
+                min_value=0.0, max_value=1.0, format="percent"
+            )
+        },
+    )
 
     _render_particle_evidence(
         context,
@@ -501,6 +557,86 @@ def _render_mlp_output_charts(
         showlegend=False,
     )
     st.plotly_chart(confidence_figure, use_container_width=True)
+
+
+def _render_mlp_model_performance(report_path: Path) -> None:
+    """Present labelled final-test performance separately from live predictions."""
+    st.subheader("MLP model performance")
+    if not report_path.exists():
+        st.info("Train the MLP to generate its labelled final-test performance report.")
+        return
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        final_test = report["final_test"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        st.warning(f"The MLP training report cannot be read: {error}")
+        return
+
+    metrics = st.columns(5)
+    metrics[0].metric("Final-test tracks", int(final_test["sample_count"]))
+    metrics[1].metric("Accuracy", f"{float(final_test['accuracy']):.3f}")
+    metrics[2].metric(
+        "Balanced accuracy", f"{float(final_test['balanced_accuracy']):.3f}"
+    )
+    metrics[3].metric("Macro F1", f"{float(final_test['macro_f1']):.3f}")
+    metrics[4].metric("Weighted F1", f"{float(final_test['weighted_f1']):.3f}")
+    st.caption(
+        "Macro F1 is the main result because each particle class contributes "
+        "equally even when the dataset contains unequal class counts."
+    )
+
+    overall_figure = go.Figure(
+        go.Bar(
+            x=["Accuracy", "Balanced accuracy", "Macro F1", "Weighted F1"],
+            y=[
+                float(final_test["accuracy"]),
+                float(final_test["balanced_accuracy"]),
+                float(final_test["macro_f1"]),
+                float(final_test["weighted_f1"]),
+            ],
+            text=[
+                f"{float(final_test[key]):.3f}"
+                for key in ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1")
+            ],
+            textposition="outside",
+            marker_color=["#4C78A8", "#72B7B2", "#F58518", "#54A24B"],
+        )
+    )
+    overall_figure.update_layout(
+        title="Labelled final-test performance",
+        yaxis={"title": "Score", "range": [0, 1.08]},
+        showlegend=False,
+        margin={"l": 10, "r": 10, "t": 55, "b": 10},
+    )
+    st.plotly_chart(overall_figure, use_container_width=True)
+
+    classification = final_test.get("classification_report", {})
+    class_rows = []
+    for class_name in final_test.get("class_names", []):
+        values = classification.get(class_name, {})
+        class_rows.append(
+            {
+                "Particle": DISPLAY_NAMES.get(class_name, class_name),
+                "Precision": float(values.get("precision", 0.0)),
+                "Recall": float(values.get("recall", 0.0)),
+                "F1": float(values.get("f1-score", 0.0)),
+                "Test tracks": int(values.get("support", 0)),
+            }
+        )
+    if class_rows:
+        st.markdown("**Performance by particle class**")
+        st.dataframe(
+            class_rows,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Precision": st.column_config.NumberColumn(format="%.3f"),
+                "Recall": st.column_config.NumberColumn(format="%.3f"),
+                "F1": st.column_config.ProgressColumn(
+                    min_value=0.0, max_value=1.0, format="%.3f"
+                ),
+            },
+        )
 
 
 def _render_particle_evidence(
