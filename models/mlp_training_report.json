@@ -115,10 +115,10 @@
             3
           ],
           [
-            50,
-            1,
-            6,
-            64
+            18,
+            0,
+            3,
+            76
           ]
         ],
         "classification_report": {
@@ -208,10 +208,10 @@
             3
           ],
           [
-            50,
-            1,
-            6,
-            64
+            18,
+            0,
+            3,
+            76
           ]
         ],
         "classification_report": {
@@ -630,13 +630,13 @@
       }
     }
   ],
-  "selected_candidate": 5,
+  "selected_candidate": 6,
   "selected_parameters": {
     "hidden_layer_sizes": [
       64,
       32
     ],
-    "alpha": 0.0001
+    "alpha": 0.001
   },
   "final_test": {
     "sample_count": 515,
@@ -671,9 +671,9 @@
         10
       ],
       [
-        4,
+        3,
         0,
-        1,
+        0,
         14
       ]
     ],
@@ -717,5 +717,5 @@
       }
     }
   },
-  "model_path": "C:\\Coding\\CloudChamberDetector\\models\\mlp_classifier.joblib"
+  "model_path": "C:\\CloudChamber\\CloudChamberDetector\\models\\mlp_classifier.joblib"
 }
