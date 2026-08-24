@@ -1,10 +1,8 @@
 """CNN member workspace for cloud-chamber particle classification.
 
-This implementation follows the same shared feature-extraction contract as the
-project's README and other model implementations: a fixed set of contour-based
-features is used as the classifier input, and the CNN is used as a small
-nonlinear model over that feature matrix rather than a separate patch-based
-training pipeline.
+Each labelled COCO annotation becomes a masked, cropped particle-track image
+patch.  The CNN learns spatial features from those patches, while sharing the
+MLP's four-class labels and leakage-safe dataset splits.
 """
 
 from __future__ import annotations
@@ -13,7 +11,7 @@ import argparse
 import csv
 import io
 import json
-from dataclasses import asdict
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Iterable
@@ -34,8 +32,7 @@ except ImportError as exc:  # pragma: no cover - dependency check for the user f
 from cloud_chamber.config import load_config
 from cloud_chamber.features import TrackFeatures
 from collections import Counter
-from cloud_chamber.ml.contour_dataset import build_feature_csv, load_feature_csv, build_segmented_feature_csv
-from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
+from cloud_chamber.ml.contour_dataset import annotation_to_mask
 
 CLASS_COLOURS = {
     "alpha": (0, 165, 255),
@@ -52,219 +49,194 @@ DISPLAY_NAMES = {
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "dataset" / "external_dataset_split"
-DEFAULT_FEATURE_DIR = PROJECT_ROOT / "data" / "features" / "muller"
 SPLIT_NAMES = ("development", "validation", "final_test")
+PATCH_SIZE = 128
 
 
 def build_class_mapping() -> dict[str, int]:
-    """Return the project label mapping used by the dataset annotations."""
-    mapping = {
+    """Return the shared four-class mapping used by every project model."""
+    return {
         "alpha": 0,
         "electron_positron": 1,
         "proton": 2,
+        "v_track": 3,
     }
-    return mapping
 
 
-def features_to_matrix(features: Iterable[TrackFeatures]) -> np.ndarray:
-    """Convert the shared contour-feature objects into the fixed CNN input matrix."""
-    rows = []
-    for track in features:
-        values = asdict(track)
-        rows.append([float(values[column]) for column in FEATURE_COLUMNS])
-    return np.asarray(rows, dtype=np.float64).reshape(-1, len(FEATURE_COLUMNS))
-
-
-class FeatureTrackCNN(nn.Module):
-    """Compact MLP-style CNN over the fixed contour-feature vector.
-
-    The project README states that all models use the same shared feature columns
-    and dataset splits. This model accepts the common 10-feature representation
-    from ``cloud_chamber.ml.member_models.mlp.FEATURE_COLUMNS`` and applies a
-    small feed-forward network, which preserves the project contract while still
-    giving the CNN a distinct implementation.
-    """
+class TrackPatchCNN(nn.Module):
+    """CNN that learns directly from cropped, masked particle-track images."""
 
     def __init__(self, input_dim: int, num_classes: int, hidden_dim: int = 64):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = num_classes
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+        self.features = nn.Sequential(
+            nn.Conv2d(1, hidden_dim // 4, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.MaxPool2d(2),
+            nn.Conv2d(hidden_dim // 4, hidden_dim // 2, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Linear(hidden_dim // 2, num_classes),
+            nn.MaxPool2d(2),
+            nn.Conv2d(hidden_dim // 2, hidden_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1)),
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(hidden_dim, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class FeatureDataset(Dataset):
-    """Dataset built from the shared contour-feature table for each split.
-    
-    Features are cached in CSV format. If the cache doesn't exist, it is built
-    automatically from the COCO annotations using the shared enhancement and
-    feature extraction pipeline, matching the project contract.
-    """
-
-    def __init__(
-        self,
-        dataset_root: str | Path,
-        split: str,
-        feature_dir: str | Path = DEFAULT_FEATURE_DIR,
-        feature_columns: tuple[str, ...] = FEATURE_COLUMNS,
-        class_mapping: dict[str, int] | None = None,
-    ) -> None:
-        self.dataset_root = Path(dataset_root)
-        self.split = split
-        self.feature_dir = Path(feature_dir)
-        self.feature_columns = tuple(feature_columns)
-        self.class_mapping = class_mapping or build_class_mapping()
-        self.samples: list[tuple[np.ndarray, int]] = []
-        self._ensure_features_exist()
-        self._load_samples()
-
-    def _ensure_features_exist(self) -> None:
-        """Build feature CSV from COCO if it doesn't exist."""
-        csv_path = self.feature_dir / f"{self.split}.csv"
-        if csv_path.exists():
-            return
-        
-        print(f"Building feature table for {self.split} split...")
-        annotation_path = self.dataset_root / self.split / "annotations_coco.json"
-        if not annotation_path.exists():
-            raise FileNotFoundError(
-                f"COCO annotations not found: {annotation_path}. "
-                f"Please verify the dataset structure."
+        if x.ndim != 4 or x.shape[1] != 1:
+            raise ValueError(
+                f"Expected (batch, 1, height, width) image tensor, got {tuple(x.shape)}"
             )
-        
-        config = load_config(PROJECT_ROOT / "config.yaml")
-        allowed_labels = set(config["classification"]["supported_classes"])
-        build_feature_csv(
-            annotation_path,
-            csv_path,
-            config["enhancement"],
-            allowed_labels=allowed_labels,
-        )
-        print(f"Saved features to {csv_path}")
+        return self.classifier(self.features(x))
 
-    def _load_samples(self) -> None:
-        csv_path = self.feature_dir / f"{self.split}.csv"
-        if not csv_path.exists():
-            raise FileNotFoundError(
-                f"Feature table not found: {csv_path}. "
-                f"Run build_feature_csv or the training script with config."
+
+def crop_track_patch(
+    image: np.ndarray,
+    bounding_box: tuple[int, int, int, int],
+    mask: np.ndarray | None = None,
+    patch_size: int = PATCH_SIZE,
+) -> np.ndarray:
+    """Return one square greyscale track patch, optionally masking background."""
+    x, y, width, height = (int(value) for value in bounding_box)
+    padding = max(8, int(round(max(width, height) * 0.15)))
+    left, top = max(0, x - padding), max(0, y - padding)
+    right, bottom = min(image.shape[1], x + width + padding), min(image.shape[0], y + height + padding)
+    crop = image[top:bottom, left:right]
+    if crop.size == 0:
+        raise ValueError(f"Invalid track crop: {bounding_box}")
+    grey = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    if mask is not None:
+        crop_mask = mask[top:bottom, left:right]
+        grey = cv2.bitwise_and(grey, grey, mask=(crop_mask > 0).astype(np.uint8) * 255)
+    return cv2.resize(grey, (patch_size, patch_size), interpolation=cv2.INTER_AREA)
+
+
+def _patch_tensor(patch: np.ndarray, augment: bool = False) -> torch.Tensor:
+    """Apply development-only light augmentation and produce a 1xHxW tensor."""
+    if augment and np.random.random() < 0.5:
+        patch = cv2.flip(patch, 1)
+    if augment:
+        angle = float(np.random.uniform(-12.0, 12.0))
+        matrix = cv2.getRotationMatrix2D((PATCH_SIZE / 2, PATCH_SIZE / 2), angle, 1.0)
+        patch = cv2.warpAffine(patch, matrix, (PATCH_SIZE, PATCH_SIZE), borderValue=0)
+    return torch.from_numpy(np.ascontiguousarray(patch[None, ...])).float() / 255.0
+
+
+@dataclass(frozen=True)
+class CocoTrackSample:
+    image_path: Path
+    annotation: dict
+    label: int
+
+
+class CocoPatchDataset(Dataset):
+    """One labelled particle-image crop per COCO instance annotation."""
+
+    def __init__(self, samples: list[CocoTrackSample], augment: bool = False):
+        self.samples = samples
+        self.augment = augment
+        # Crops are immutable training inputs.  Building them once avoids
+        # re-opening and resizing the same source images on every epoch.
+        self.patches = [self._load_patch(sample) for sample in samples]
+
+    @staticmethod
+    def _load_patch(sample: CocoTrackSample) -> np.ndarray:
+        """Read one source image and prepare its labelled patch once."""
+        image = cv2.imread(str(sample.image_path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise FileNotFoundError(f"Cannot read training image: {sample.image_path}")
+        mask = annotation_to_mask(sample.annotation, image.shape[:2])
+        if mask.shape != image.shape[:2]:
+            raise ValueError(
+                f"Mask shape {mask.shape} does not match image shape {image.shape[:2]}"
             )
-        
-        matrix, labels = load_feature_csv(
-            csv_path,
-            allowed_labels=set(self.class_mapping.keys()),
-        )
-        for features, label in zip(matrix, labels, strict=True):
-            self.samples.append((features.astype(np.float32), self.class_mapping.get(str(label), 0)))
+        coordinates = cv2.boundingRect((mask > 0).astype(np.uint8))
+        if coordinates[2] <= 0 or coordinates[3] <= 0:
+            coordinates = tuple(int(round(value)) for value in sample.annotation["bbox"])
+        return crop_track_patch(image, coordinates, mask)
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
-        features, label = self.samples[index]
-        return torch.from_numpy(features), int(label)
+        return _patch_tensor(self.patches[index], augment=self.augment), self.samples[index].label
 
 
-
-def primary_split_annotations(source_path: Path, split: str) -> Path:
-    payload = json.loads(source_path.read_text(encoding="utf-8"))
-    image_ids = {
-        int(image["id"])
-        for image in payload.get("images", [])
-        if image.get("split") == split
-    }
-    if not image_ids:
-        raise ValueError(f"Primary dataset contains no images for split={split!r}")
-    filtered = {
-        **payload,
-        "images": [img for img in payload.get("images", []) if int(img["id"]) in image_ids],
-        "annotations": [ann for ann in payload.get("annotations", []) if int(ann["image_id"]) in image_ids],
-    }
-    output_path = source_path.with_name(f"{split}_annotations_coco.json")
-    output_path.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
-    return output_path
-
-def load_or_build_features(
+def coco_track_samples(
     annotation_path: Path,
-    feature_path: Path,
-    config: dict,
-    allowed_labels: set[str],
-    rebuild: bool,
-    roi_profile_name: str,
-) -> tuple[np.ndarray, np.ndarray]:
-    if rebuild or not feature_path.exists():
-        print(f"Building labelled contour features: {feature_path.name}")
-        build_segmented_feature_csv(
-            annotation_path,
-            feature_path,
-            config,
-            allowed_labels=allowed_labels,
-            roi_profile_name=roi_profile_name,
+    class_mapping: dict[str, int],
+    split: str | None = None,
+) -> list[CocoTrackSample]:
+    """Read supported COCO annotations, optionally filtering primary split."""
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    categories = {int(item["id"]): str(item["name"]) for item in payload["categories"]}
+    images = {
+        int(item["id"]): item
+        for item in payload["images"]
+        if split is None or item.get("split") == split
+    }
+    samples = []
+    for annotation in payload["annotations"]:
+        image = images.get(int(annotation["image_id"]))
+        if image is None:
+            continue
+        label_name = categories[int(annotation["category_id"])]
+        if label_name not in class_mapping:
+            continue
+        samples.append(
+            CocoTrackSample(
+                image_path=(annotation_path.parent / image["file_name"]).resolve(),
+                annotation=annotation,
+                label=class_mapping[label_name],
+            )
         )
-    return load_feature_csv(feature_path, allowed_labels)
+    return samples
 
 def build_dataloaders(
     dataset_root: str | Path = DEFAULT_DATASET_ROOT,
     primary_dataset_root: str | Path = PROJECT_ROOT / "dataset" / "primary_dataset_split",
     batch_size: int = 16,
-    feature_dir: str | Path = DEFAULT_FEATURE_DIR,
-    rebuild_features: bool = False,
+    random_seed: int = 42,
 ) -> tuple[dict[str, DataLoader], dict[str, int], dict[str, dict[str, dict]]]:
     dataset_root = Path(dataset_root)
     primary_dataset_root = Path(primary_dataset_root)
-    feature_dir = Path(feature_dir)
     class_mapping = build_class_mapping()
-    allowed_labels = set(class_mapping.keys())
-    config = load_config(PROJECT_ROOT / "config.yaml")
-
     primary_annotations = primary_dataset_root / "annotations_coco.json"
     if not primary_annotations.is_file():
         raise FileNotFoundError(f"Primary annotation file not found: {primary_annotations}")
 
-    split_tables = {}
     class_counts = {}
     loaders = {}
-
+    generator = torch.Generator().manual_seed(random_seed)
+    inverse_mapping = {value: key for key, value in class_mapping.items()}
     for split in SPLIT_NAMES:
         external_annotations = dataset_root / split / "annotations_coco.json"
         if not external_annotations.is_file():
             raise FileNotFoundError(f"External annotation file not found: {external_annotations}")
-            
-        primary_filtered = primary_split_annotations(primary_annotations, split)
-
-        external_x, external_y = load_or_build_features(
-            external_annotations, feature_dir / f"{split}.csv", config, allowed_labels, rebuild_features, "external_muller"
-        )
-        primary_x, primary_y = load_or_build_features(
-            primary_filtered, feature_dir / f"primary_{split}.csv", config, allowed_labels, rebuild_features, "primary_full_chamber"
-        )
-        
-        matrix = np.concatenate((external_x, primary_x), axis=0)
-        labels = np.concatenate((external_y, primary_y), axis=0)
-        split_tables[split] = (matrix, labels)
-        
+        external_samples = coco_track_samples(external_annotations, class_mapping)
+        primary_samples = coco_track_samples(primary_annotations, class_mapping, split=split)
+        samples = external_samples + primary_samples
+        if not samples:
+            raise ValueError(f"No supported image-patch samples found for {split}")
+        def count_labels(items: list[CocoTrackSample]) -> dict[str, int]:
+            return dict(sorted(Counter(inverse_mapping[item.label] for item in items).items()))
         class_counts[split] = {
-            "external": dict(sorted(Counter(external_y).items())),
-            "primary": dict(sorted(Counter(primary_y).items())),
-            "combined": dict(sorted(Counter(labels).items())),
+            "external": count_labels(external_samples),
+            "primary": count_labels(primary_samples),
+            "combined": count_labels(samples),
         }
-        print(f"{split}: {len(labels)} combined tracks (external={len(external_y)}, primary={len(primary_y)})")
-        
-        tensors_x = torch.tensor(matrix, dtype=torch.float32)
-        int_labels = np.array([class_mapping.get(str(lbl), 0) for lbl in labels], dtype=np.int64)
-        tensors_y = torch.tensor(int_labels, dtype=torch.long)
-        
-        dataset = torch.utils.data.TensorDataset(tensors_x, tensors_y)
-        loaders[split] = DataLoader(dataset, batch_size=batch_size, shuffle=(split == "development"))
-
+        print(f"{split}: {len(samples)} labelled image patches (external={len(external_samples)}, primary={len(primary_samples)})")
+        dataset = CocoPatchDataset(samples, augment=(split == "development"))
+        loaders[split] = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=(split == "development"),
+            generator=generator if split == "development" else None,
+        )
     return loaders, class_mapping, class_counts
 
 def evaluate_loader(model: nn.Module, loader: DataLoader, class_mapping: dict[str, int]) -> dict:
@@ -303,30 +275,37 @@ def evaluate_loader(model: nn.Module, loader: DataLoader, class_mapping: dict[st
 def train_cnn(
     dataset_root: str | Path = DEFAULT_DATASET_ROOT,
     primary_dataset_root: str | Path = PROJECT_ROOT / "dataset" / "primary_dataset_split",
-    epochs: int = 20,
+    epochs: int = 30,
     batch_size: int = 16,
     learning_rate: float = 1e-3,
-    feature_dir: str | Path = DEFAULT_FEATURE_DIR,
-    rebuild_features: bool = False,
+    random_seed: int = 42,
 ) -> dict[str, Any]:
+    np.random.seed(random_seed)
+    torch.manual_seed(random_seed)
     loaders, class_mapping, class_counts = build_dataloaders(
         dataset_root=dataset_root,
         primary_dataset_root=primary_dataset_root,
         batch_size=batch_size,
-        feature_dir=feature_dir,
-        rebuild_features=rebuild_features,
+        random_seed=random_seed,
     )
     
     train_loader = loaders["development"]
     val_loader = loaders["validation"]
     test_loader = loaders["final_test"]
     
-    model = FeatureTrackCNN(input_dim=len(FEATURE_COLUMNS), num_classes=len(class_mapping))
+    model = TrackPatchCNN(input_dim=PATCH_SIZE, num_classes=len(class_mapping))
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    criterion = nn.CrossEntropyLoss()
+    # Match the MLP's inverse-frequency balancing policy so every class,
+    # including sparse V-tracks, has equal total training influence.
+    development_labels = torch.tensor(
+        [sample.label for sample in train_loader.dataset.samples], dtype=torch.long
+    )
+    counts = torch.bincount(development_labels, minlength=len(class_mapping)).float()
+    class_weights = counts.sum() / (len(class_mapping) * counts)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    history = {"train_loss": [], "val_loss": [], "val_accuracy": []}
-    best_val_loss = float('inf')
+    history = {"train_loss": [], "val_loss": [], "val_accuracy": [], "val_macro_f1": []}
+    best_score: tuple[float, float] | None = None
     best_state = None
     
     for _ in range(epochs):
@@ -346,6 +325,8 @@ def train_cnn(
         val_loss = 0.0
         correct = 0
         total = 0
+        validation_predictions = []
+        validation_labels = []
         with torch.no_grad():
             for features, labels in val_loader:
                 logits = model(features)
@@ -354,18 +335,28 @@ def train_cnn(
                 predictions = logits.argmax(dim=1)
                 correct += (predictions == labels).sum().item()
                 total += labels.size(0)
+                validation_predictions.extend(predictions.tolist())
+                validation_labels.extend(labels.tolist())
 
         val_loss = val_loss / len(val_loader.dataset)
         val_accuracy = correct / total if total else 0.0
-        
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        from sklearn.metrics import balanced_accuracy_score, f1_score
+        val_macro_f1 = float(
+            f1_score(validation_labels, validation_predictions, average="macro", zero_division=0)
+        )
+        score = (
+            val_macro_f1,
+            float(balanced_accuracy_score(validation_labels, validation_predictions)),
+        )
+        if best_score is None or score > best_score:
+            best_score = score
             import copy
             best_state = copy.deepcopy(model.state_dict())
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
         history["val_accuracy"].append(val_accuracy)
+        history["val_macro_f1"].append(val_macro_f1)
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -380,40 +371,13 @@ def train_cnn(
         "dataset_root": str(Path(dataset_root)),
         "primary_dataset_root": str(Path(primary_dataset_root)),
         "class_counts": class_counts,
+        "class_weights": class_weights.tolist(),
+        "random_seed": random_seed,
         "validation_metrics": validation_metrics,
         "final_test_metrics": final_test_metrics,
     }
 
-def predict_tracks(model: nn.Module, dataset_root: str | Path, split: str = "development") -> list[dict[str, Any]]:
-    """Predict labels for all feature rows in a chosen split and return simple results."""
-    class_mapping = build_class_mapping()
-    dataset = FeatureDataset(dataset_root, split=split, class_mapping=class_mapping)
-    loader = DataLoader(dataset, batch_size=16, shuffle=False)
-    model.eval()
-    results: list[dict[str, Any]] = []
-    with torch.no_grad():
-        for features, labels in loader:
-            logits = model(features)
-            probabilities = torch.softmax(logits, dim=1)
-            preds = logits.argmax(dim=1)
-            inv_mapping = {value: key for key, value in class_mapping.items()}
-            for label, prediction, probability in zip(labels, preds, probabilities, strict=True):
-                confidence = float(probability[int(prediction.item())].item())
-                results.append(
-                    {
-                        "true_label": inv_mapping[int(label.item())],
-                        "predicted_label": inv_mapping[int(prediction.item())],
-                        "confidence": confidence,
-                        "probabilities": {
-                            inv_mapping[i]: float(probability[i].item())
-                            for i in range(len(probability))
-                        },
-                    }
-                )
-    return results
-
-
-def load_model(model_path: str | Path, num_classes: int = 3) -> dict:
+def load_model(model_path: str | Path) -> dict:
     """Load a saved CNN bundle in the same container shape used by the other model pages."""
     path = Path(model_path)
     if not path.is_file():
@@ -423,38 +387,53 @@ def load_model(model_path: str | Path, num_classes: int = 3) -> dict:
 
     payload = torch.load(path, map_location="cpu")
     class_mapping = payload.get("class_mapping") or build_class_mapping()
-    feature_columns = payload.get("feature_columns") or FEATURE_COLUMNS
-    if tuple(feature_columns) != FEATURE_COLUMNS:
-        raise ValueError("Saved CNN uses a different feature-column contract")
+    metadata = payload.get("metadata", {})
+    if metadata.get("input_kind") != "track_image_patch":
+        raise ValueError(
+            "Saved CNN is not the image-patch model. Retrain it with "
+            "python -m cloud_chamber.ml.member_models.cnn."
+        )
 
-    model = FeatureTrackCNN(input_dim=len(FEATURE_COLUMNS), num_classes=num_classes)
+    model = TrackPatchCNN(
+        input_dim=PATCH_SIZE, num_classes=len(class_mapping)
+    )
     model.load_state_dict(payload["model_state"])
     model.eval()
     return {
         "model": model,
-        "feature_columns": FEATURE_COLUMNS,
         "class_mapping": class_mapping,
         "classes": list(class_mapping.keys()),
+        "patch_size": int(metadata.get("patch_size", PATCH_SIZE)),
     }
 
 
-def predict_tracks(model_bundle: dict, features: Iterable[TrackFeatures]) -> list[dict]:
-    """Classify segmented contours using the saved CNN and return probability-rich rows."""
+def predict_tracks(
+    model_bundle: dict,
+    image: np.ndarray,
+    features: Iterable[TrackFeatures],
+    binary_mask: np.ndarray,
+) -> list[dict]:
+    """Classify every segmented track crop in an image or video frame."""
     feature_list = list(features)
-    matrix = features_to_matrix(feature_list)
-    if matrix.shape[0] == 0:
+    if not feature_list:
         return []
 
     model = model_bundle["model"]
     model.eval()
-    tensor = torch.tensor(matrix, dtype=torch.float32)
+    patch_size = int(model_bundle.get("patch_size", PATCH_SIZE))
+    patches = [
+        _patch_tensor(crop_track_patch(image, track.bounding_box, binary_mask, patch_size))
+        for track in feature_list
+    ]
+    tensor = torch.stack(patches)
+    started = perf_counter()
     with torch.no_grad():
         logits = model(tensor)
         probabilities = torch.softmax(logits, dim=1)
     predictions = logits.argmax(dim=1)
     class_mapping = model_bundle.get("class_mapping") or build_class_mapping()
     inv_mapping = {value: key for key, value in class_mapping.items()}
-    elapsed_per_track = 0.0
+    elapsed_per_track = (perf_counter() - started) * 1000.0 / len(feature_list)
 
     return [
         {
@@ -570,7 +549,6 @@ def save_model(model: nn.Module, model_path: str | Path, metadata: dict[str, Any
     class_mapping = (metadata or {}).get("class_mapping") or build_class_mapping()
     payload = {
         "model_state": model.state_dict(),
-        "feature_columns": FEATURE_COLUMNS,
         "class_mapping": class_mapping,
         "classes": list(class_mapping.keys()),
         "metadata": metadata or {},
@@ -583,46 +561,54 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a CNN for cloud-chamber particle classification")
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT, help="External dataset split root.")
     parser.add_argument("--primary-dataset-root", type=Path, default=PROJECT_ROOT / "dataset" / "primary_dataset_split", help="Primary dataset root containing annotations_coco.json.")
-    parser.add_argument("--feature-dir", type=Path, default=DEFAULT_FEATURE_DIR)
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--rebuild-features", action="store_true")
     parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "models" / "cnn_classifier.pth")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    config = load_config(PROJECT_ROOT / "config.yaml")
+    random_seed = int(config["project"]["random_seed"])
     result = train_cnn(
         dataset_root=args.dataset_root,
         primary_dataset_root=args.primary_dataset_root,
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        feature_dir=args.feature_dir,
-        rebuild_features=args.rebuild_features,
+        random_seed=random_seed,
     )
     
     model_path = save_model(result["model"], args.output, metadata={
         "class_mapping": result["class_mapping"],
         "classes": list(result["class_mapping"].keys()),
         "history": result["history"],
+        "class_weights": result["class_weights"],
+        "random_seed": result["random_seed"],
+        "input_kind": "track_image_patch",
+        "patch_size": PATCH_SIZE,
     })
     
     report = {
-        "method": "FeatureTrackCNN",
+        "method": "TrackPatchCNN",
         "feature_source": (
-            "combined primary and external automatic segmentation contours "
-            "labelled by COCO-mask overlap"
+            "combined primary and external COCO instance masks; each labelled "
+            "particle is cropped from its source image and resized"
         ),
-        "selection_metric": "validation loss",
-        "feature_columns": FEATURE_COLUMNS,
+        "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
+        "input": "masked greyscale particle-track patches resized to 128x128",
         "class_counts": result["class_counts"],
+        "classes": list(result["class_mapping"].keys()),
+        "class_mapping": result["class_mapping"],
+        "balancing": "inverse-frequency class weights in CrossEntropyLoss",
+        "random_seed": result["random_seed"],
         "hyperparameters": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
+            "patch_size": PATCH_SIZE,
         },
         "validation": result["validation_metrics"],
         "final_test": result["final_test_metrics"],

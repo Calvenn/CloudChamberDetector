@@ -143,6 +143,7 @@ def build_segmented_feature_csv(
     allowed_labels: set[str] | None = None,
     minimum_label_overlap: float = 0.5,
     roi_profile_name: str = "external_muller",
+    merge_annotation_fragments: bool = False,
 ) -> dict[str, int]:
     """Build labelled features from automatic contours, not perfect masks.
 
@@ -228,6 +229,8 @@ def build_segmented_feature_csv(
             for annotation in annotations
         ]
 
+        matched_fragments: dict[int, list[tuple[np.ndarray, float]]] = defaultdict(list)
+        annotation_by_id = {int(item["id"]): item for item in annotations}
         for track in measured:
             contour = contour_by_box.get(track.bounding_box)
             if contour is None:
@@ -251,6 +254,12 @@ def build_segmented_feature_csv(
             if best_annotation is None or best_overlap < minimum_label_overlap:
                 continue
             label = categories[int(best_annotation["category_id"])]
+            if merge_annotation_fragments:
+                annotation_id = int(best_annotation["id"])
+                matched_fragments[annotation_id].append(
+                    (predicted_mask, best_overlap)
+                )
+                continue
             rows.append(
                 {
                     "image_id": image_id,
@@ -264,6 +273,38 @@ def build_segmented_feature_csv(
                 }
             )
             counts[label] += 1
+
+        if merge_annotation_fragments:
+            for annotation_id, fragments in matched_fragments.items():
+                combined_mask = np.zeros_like(segmented.binary_mask)
+                for fragment_mask, _ in fragments:
+                    combined_mask = cv2.bitwise_or(combined_mask, fragment_mask)
+                combined_mask = _connect_mask_components(combined_mask)
+                combined_features = extract_track_features(
+                    combined_mask,
+                    enhanced.enhanced,
+                    minimum_area=feature_minimum_area,
+                )
+                if not combined_features:
+                    continue
+                # Component bridging should produce one contour. The largest
+                # result is a safe fallback for degenerate one-pixel links.
+                track = max(combined_features, key=lambda item: item.area_pixels)
+                annotation = annotation_by_id[annotation_id]
+                label = categories[int(annotation["category_id"])]
+                rows.append(
+                    {
+                        "image_id": image_id,
+                        "annotation_id": annotation_id,
+                        "label_overlap": max(value for _, value in fragments),
+                        "label": label,
+                        **{
+                            column: getattr(track, column)
+                            for column in FEATURE_COLUMNS
+                        },
+                    }
+                )
+                counts[label] += 1
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,6 +320,44 @@ def build_segmented_feature_csv(
         writer.writeheader()
         writer.writerows(rows)
     return dict(sorted(counts.items()))
+
+
+def _connect_mask_components(mask: np.ndarray) -> np.ndarray:
+    """Join fragments already proven to belong to one labelled particle."""
+    connected = mask.copy()
+    while True:
+        count, labels, _, centroids = cv2.connectedComponentsWithStats(
+            (connected > 0).astype(np.uint8), connectivity=8
+        )
+        if count <= 2:
+            return connected
+        component_pixels = [
+            np.column_stack(np.where(labels == component_id))
+            for component_id in range(1, count)
+        ]
+        centres = centroids[1:]
+        best = None
+        for first in range(len(centres)):
+            for second in range(first + 1, len(centres)):
+                distance = float(np.linalg.norm(centres[first] - centres[second]))
+                if best is None or distance < best[0]:
+                    best = (distance, first, second)
+        assert best is not None
+        _, first, second = best
+        # A concave component's centroid can lie outside its foreground. Use
+        # actual pixels closest to the opposite centroid so the bridge always
+        # touches both components and the loop must make progress.
+        first_pixels = component_pixels[first]
+        second_pixels = component_pixels[second]
+        first_yx = first_pixels[
+            np.argmin(np.sum((first_pixels[:, ::-1] - centres[second]) ** 2, axis=1))
+        ]
+        second_yx = second_pixels[
+            np.argmin(np.sum((second_pixels[:, ::-1] - centres[first]) ** 2, axis=1))
+        ]
+        first_xy = (int(first_yx[1]), int(first_yx[0]))
+        second_xy = (int(second_yx[1]), int(second_yx[0]))
+        cv2.line(connected, first_xy, second_xy, 255, thickness=1)
 
 
 def load_feature_csv(

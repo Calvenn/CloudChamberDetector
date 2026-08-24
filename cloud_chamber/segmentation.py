@@ -67,6 +67,14 @@ def segment_tracks(
     """Segment bright particle tracks and return their external contours."""
     if enhanced_image.ndim != 2 or enhanced_image.dtype != np.uint8:
         raise ValueError("Segmentation input must be an 8-bit grayscale image")
+    threshold_method = str(
+        settings.get("threshold_method", "white_tophat_otsu_hysteresis")
+    )
+    if threshold_method != "white_tophat_otsu_hysteresis":
+        raise ValueError(
+            "Unsupported threshold_method. Expected "
+            "'white_tophat_otsu_hysteresis'."
+        )
 
     started = perf_counter()
     top_hat_size = int(settings["top_hat_kernel"])
@@ -223,6 +231,37 @@ def segment_tracks(
     found, _ = cv2.findContours(
         refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
+    # Link plausible fragments before size filtering. Previously, alignment
+    # merging ran only after filtering, so short sections of one long dotted
+    # track were discarded before they had a chance to form a valid contour.
+    alignment_merge_gap = float(settings.get("alignment_merge_gap", 0))
+    alignment_merge_angle = float(settings.get("alignment_merge_angle", 25))
+    alignment_merge_minimum_aspect = float(
+        settings.get("alignment_merge_minimum_aspect", 2.5)
+    )
+    prefilter_alignment_links = 0
+    prefilter_alignment_minimum_aspect = float(
+        settings.get(
+            "prefilter_alignment_minimum_aspect",
+            alignment_merge_minimum_aspect,
+        )
+    )
+    if (
+        bool(settings.get("prefilter_alignment_merge", True))
+        and alignment_merge_gap > 0
+        and len(found) > 1
+    ):
+        refined, prefilter_alignment_links = _link_aligned_contours(
+            refined,
+            found,
+            maximum_gap=alignment_merge_gap,
+            maximum_angle_difference=alignment_merge_angle,
+            minimum_aspect_ratio=prefilter_alignment_minimum_aspect,
+        )
+        refined = cv2.bitwise_and(refined, roi_mask)
+        found, _ = cv2.findContours(
+            refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+        )
     minimum_area = float(settings["minimum_object_area"])
     minimum_major_axis = float(settings["minimum_major_axis"])
     minimum_thin_area = float(settings["minimum_thin_area"])
@@ -287,11 +326,6 @@ def segment_tracks(
     clean_mask = np.zeros_like(refined)
     if contours:
         cv2.drawContours(clean_mask, contours, -1, 255, cv2.FILLED)
-    alignment_merge_gap = float(settings.get("alignment_merge_gap", 0))
-    alignment_merge_angle = float(settings.get("alignment_merge_angle", 25))
-    alignment_merge_minimum_aspect = float(
-        settings.get("alignment_merge_minimum_aspect", 2.5)
-    )
     alignment_links = 0
     if alignment_merge_gap > 0 and len(contours) > 1:
         clean_mask, alignment_links = _link_aligned_contours(
@@ -317,7 +351,7 @@ def segment_tracks(
     ]
 
     return SegmentationResult(
-        method_name="Otsu thresholding + morphological opening/closing",
+        method_name="Otsu-guided hysteresis + morphological refinement",
         binary_mask=clean_mask,
         bounding_boxes=boxes,
         contours=final_contours,
@@ -332,7 +366,8 @@ def segment_tracks(
             "rejected_small_blobs": rejected_mask,
         },
         parameters={
-            "threshold": "White top-hat + Otsu plus offset",
+            "threshold": "White top-hat + Otsu-guided hysteresis",
+            "threshold_method": threshold_method,
             "top_hat_kernel": top_hat_size,
             "otsu_value": float(otsu_value),
             "threshold_offset": float(settings["threshold_offset"]),
@@ -347,6 +382,10 @@ def segment_tracks(
             "closing_kernel": closing_size,
             "directional_closing_length": directional_length,
             "alignment_merge_gap": alignment_merge_gap,
+            "prefilter_alignment_minimum_aspect": (
+                prefilter_alignment_minimum_aspect
+            ),
+            "prefilter_alignment_links_created": prefilter_alignment_links,
             "alignment_links_created": alignment_links,
             "opening_kernel": opening_size,
             "opening_applied": opening_applied,

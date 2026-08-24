@@ -56,14 +56,21 @@ spatial_scaling:
   pixel_parameter_reference_size: 1920
 
 segmentation:
-  threshold_method: white_tophat_otsu
+  # Otsu supplies an image-adaptive baseline; two connected thresholds then
+  # retain faint electron pixels only when they belong to a strong track seed.
+  threshold_method: white_tophat_otsu_hysteresis
   # White top-hat kernel size: 121 at 1920 ref scale (scales to 41px at 640 res)
   # Large top-hat kernel prevents large white alpha blobs from being subtracted out!
   top_hat_kernel: 121
   # Hysteresis seed & low threshold offsets
   threshold_offset: 28
-  hysteresis_low_threshold_offset: 6
+  # The weak threshold follows dim sections connected to a strong seed.
+  hysteresis_low_threshold_offset: 0
   hysteresis_seed_pixels: 2
+  # Keep the experimental directional recovery branch disabled: validation
+  # showed that it merged nearby structures. Connected hysteresis remains on.
+  thin_line_opening_length: 1
+  thin_line_threshold_offset: 4
   # General rule: require substantial area for compact/general objects (e.g. green blobs / thick alpha).
   minimum_object_area: 1000
   minimum_major_axis: 80
@@ -74,13 +81,18 @@ segmentation:
   minimum_thin_major_axis: 45
   minimum_thin_aspect_ratio: 3.0
   # Small closing kernel preserves 1-2px electron track thinness for proper classification
-  closing_kernel: 3
+  # Seven reference pixels scale to an effective 3x3 kernel at 640 px.
+  closing_kernel: 7
   closing_iterations: 1
   directional_closing_length: 3
   # Use 1-pixel collinear alignment lines to bridge track gaps without thickening track width
   alignment_merge_gap: 30
   alignment_merge_angle: 30
   alignment_merge_minimum_aspect: 1.5
+  prefilter_alignment_merge: true
+  # Short fragments have less stable geometry than complete tracks. Permit
+  # mildly elongated pieces to join, then apply the stricter 1.5 final rule.
+  prefilter_alignment_minimum_aspect: 1.3
   # Opening is disabled so it cannot erase tracks only 1-2 pixels wide.
   apply_opening: false
   opening_kernel: 3
@@ -97,11 +109,13 @@ segmentation:
       threshold_offset: 28
       # 121 kernel preserves large white alpha blobs without erasing them
       top_hat_kernel: 121
-      hysteresis_low_threshold_offset: 6
+      hysteresis_low_threshold_offset: 0
       hysteresis_seed_pixels: 2
-      closing_kernel: 3
-      directional_closing_length: 3
-      alignment_merge_gap: 30
+      thin_line_opening_length: 1
+      thin_line_threshold_offset: 4
+      closing_kernel: 7
+      directional_closing_length: 7
+      alignment_merge_gap: 180
       alignment_merge_angle: 30
       alignment_merge_minimum_aspect: 1.5
       minimum_object_area: 1000
@@ -120,11 +134,13 @@ segmentation:
       # High seed threshold (55) to suppress dense background snow noise
       threshold_offset: 55
       top_hat_kernel: 61
-      hysteresis_low_threshold_offset: 15
+      hysteresis_low_threshold_offset: 5
       hysteresis_seed_pixels: 3
-      closing_kernel: 3
-      directional_closing_length: 3
-      alignment_merge_gap: 30
+      thin_line_opening_length: 1
+      thin_line_threshold_offset: 10
+      closing_kernel: 7
+      directional_closing_length: 7
+      alignment_merge_gap: 150
       alignment_merge_angle: 30
       alignment_merge_minimum_aspect: 1.5
       minimum_object_area: 1200
