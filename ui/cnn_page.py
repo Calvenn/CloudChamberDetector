@@ -86,7 +86,10 @@ def render_cnn_page(config: dict, context: PageContext) -> None:
                 st.session_state.get("calibration_settings"),
             )
             sample_predictions = predict_tracks(
-                model_bundle, sample_result["features"]
+                model_bundle,
+                sample_result["input_image"],
+                sample_result["features"],
+                sample_result["segmentation"].binary_mask,
             )
             sample_quality = assess_all_contours(
                 sample_result["features"],
