@@ -84,9 +84,9 @@ segmentation:
   # Seven reference pixels scale to an effective 3x3 kernel at 640 px.
   closing_kernel: 7
   closing_iterations: 1
-  directional_closing_length: 7
+  directional_closing_length: 3
   # Use 1-pixel collinear alignment lines to bridge track gaps without thickening track width
-  alignment_merge_gap: 180
+  alignment_merge_gap: 30
   alignment_merge_angle: 30
   alignment_merge_minimum_aspect: 1.5
   prefilter_alignment_merge: true
@@ -167,3 +167,5 @@ classification:
   primary_dataset_classes:
     - alpha
     - electron_positron
+    - proton
+    - v_track
