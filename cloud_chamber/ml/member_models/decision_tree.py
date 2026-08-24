@@ -46,13 +46,12 @@ FEATURE_COLUMNS = (
     "mean_intensity",
 )
 
-# Matches cloud_chamber.ml.member_models.mlp so a class keeps the same visual
-# identity in every model's exported report. Yellow (applied in
-# build_visual_report, not here) is reserved for uncertain predictions.
+# OpenCV colours are BGR. These colours identify the predicted particle class
+# independently of the model confidence.
 CLASS_COLOURS = {
-    "alpha": (0, 165, 255),
-    "electron_positron": (255, 120, 0),
-    "proton": (0, 200, 0),
+    "alpha": (0, 255, 0),
+    "electron_positron": (255, 0, 0),
+    "proton": (0, 0, 255),
     "v_track": (180, 0, 180),
 }
 DISPLAY_NAMES = {
@@ -332,9 +331,7 @@ def build_visual_report(
         x, y, width, height = track.bounding_box
         confidence = float(prediction["confidence"])
         uncertain = confidence < confidence_threshold
-        colour = (0, 255, 255) if uncertain else CLASS_COLOURS.get(
-            prediction["predicted_class"], (255, 255, 255)
-        )
+        colour = CLASS_COLOURS.get(prediction["predicted_class"], (255, 255, 255))
 
         # The same track ID connects the picture, feature table and CSV row.
         cv2.rectangle(overlay, (x, y), (x + width, y + height), colour, 2)

@@ -339,8 +339,8 @@ def render(context: PageContext) -> None:
     
     st.image(context.bgr_to_rgb(overlay))
     st.caption(
-        "Decision Tree particle predictions. Yellow annotations are predictions "
-        f"below the selected confidence threshold ({confidence_threshold:.0%})."
+        "Decision Tree particle predictions. Annotation colours identify the "
+        "predicted particle type; confidence still controls the report status."
     )
     
     # ===== SECTION 4: IMAGE-LEVEL DETAILS =====
