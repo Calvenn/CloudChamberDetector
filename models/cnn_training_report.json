@@ -2,6 +2,7 @@
   "method": "TrackPatchCNN",
   "feature_source": "combined primary and external COCO instance masks; each labelled particle is cropped from its source image and resized",
   "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
+  "final_fit_source": "development + validation after validation-based selection",
   "input": "masked greyscale particle-track patches resized to 128x128",
   "class_counts": {
     "development": {
@@ -83,7 +84,7 @@
     "balanced_accuracy": 0.6556578392246755,
     "macro_f1": 0.5904815096765561,
     "weighted_f1": 0.8508720688861765,
-    "mean_inference_ms_per_track": 2.6070572468118933,
+    "mean_inference_ms_per_track": 2.430082170998428,
     "class_names": [
       "alpha",
       "electron_positron",
@@ -121,25 +122,29 @@
         "precision": 0.8792569659442725,
         "recall": 0.668235294117647,
         "f1-score": 0.7593582887700535,
-        "support": 425.0
+        "support": 425.0,
+        "class_accuracy": 0.668235294117647
       },
       "electron_positron": {
         "precision": 0.975609756097561,
         "recall": 0.922509225092251,
         "f1-score": 0.948316737790422,
-        "support": 1084.0
+        "support": 1084.0,
+        "class_accuracy": 0.922509225092251
       },
       "proton": {
         "precision": 0.1415929203539823,
         "recall": 0.37209302325581395,
         "f1-score": 0.20512820512820512,
-        "support": 43.0
+        "support": 43.0,
+        "class_accuracy": 0.37209302325581395
       },
       "v_track": {
         "precision": 0.3404255319148936,
         "recall": 0.6597938144329897,
         "f1-score": 0.44912280701754387,
-        "support": 97.0
+        "support": 97.0,
+        "class_accuracy": 0.6597938144329897
       },
       "accuracy": 0.8271679805942995,
       "macro avg": {
@@ -154,15 +159,22 @@
         "f1-score": 0.8508720688861765,
         "support": 1649.0
       }
+    },
+    "class_accuracy_definition": "Class-specific accuracy equals recall: correct predictions / actual samples of that class.",
+    "mean_inference_ms_per_track_by_true_class": {
+      "alpha": 2.2007919999989953,
+      "electron_positron": 2.443421771180665,
+      "proton": 2.714402325245617,
+      "v_track": 2.480214432880436
     }
   },
   "final_test": {
     "sample_count": 1511,
-    "accuracy": 0.757114493712773,
-    "balanced_accuracy": 0.6595176681419879,
-    "macro_f1": 0.4949094717992758,
-    "weighted_f1": 0.7824183440988369,
-    "mean_inference_ms_per_track": 2.5295886168009702,
+    "accuracy": 0.7511581733951026,
+    "balanced_accuracy": 0.6379310153636404,
+    "macro_f1": 0.4920554193538532,
+    "weighted_f1": 0.7823748984138725,
+    "mean_inference_ms_per_track": 2.937293050962936,
     "class_names": [
       "alpha",
       "electron_positron",
@@ -171,68 +183,79 @@
     ],
     "confusion_matrix": [
       [
-        105,
-        62,
-        91,
-        38
+        114,
+        37,
+        110,
+        35
       ],
       [
-        34,
-        985,
-        115,
-        1
+        62,
+        968,
+        105,
+        0
       ],
       [
         3,
-        12,
-        41,
-        7
+        15,
+        42,
+        3
       ],
       [
-        4,
+        6,
         0,
         0,
-        13
+        11
       ]
     ],
     "classification_report": {
       "alpha": {
-        "precision": 0.7191780821917808,
-        "recall": 0.3547297297297297,
-        "f1-score": 0.4751131221719457,
-        "support": 296.0
+        "precision": 0.6162162162162163,
+        "recall": 0.38513513513513514,
+        "f1-score": 0.47401247401247404,
+        "support": 296.0,
+        "class_accuracy": 0.38513513513513514
       },
       "electron_positron": {
-        "precision": 0.9301227573182247,
-        "recall": 0.8678414096916299,
-        "f1-score": 0.8979033728350045,
-        "support": 1135.0
+        "precision": 0.9490196078431372,
+        "recall": 0.852863436123348,
+        "f1-score": 0.8983758700696056,
+        "support": 1135.0,
+        "class_accuracy": 0.852863436123348
       },
       "proton": {
-        "precision": 0.1659919028340081,
-        "recall": 0.6507936507936508,
-        "f1-score": 0.2645161290322581,
-        "support": 63.0
+        "precision": 0.16342412451361868,
+        "recall": 0.6666666666666666,
+        "f1-score": 0.2625,
+        "support": 63.0,
+        "class_accuracy": 0.6666666666666666
       },
       "v_track": {
-        "precision": 0.22033898305084745,
-        "recall": 0.7647058823529411,
-        "f1-score": 0.34210526315789475,
-        "support": 17.0
+        "precision": 0.22448979591836735,
+        "recall": 0.6470588235294118,
+        "f1-score": 0.3333333333333333,
+        "support": 17.0,
+        "class_accuracy": 0.6470588235294118
       },
-      "accuracy": 0.757114493712773,
+      "accuracy": 0.7511581733951026,
       "macro avg": {
-        "precision": 0.5089079313487153,
-        "recall": 0.6595176681419879,
-        "f1-score": 0.4949094717992758,
+        "precision": 0.48828743612283493,
+        "recall": 0.6379310153636404,
+        "f1-score": 0.4920554193538532,
         "support": 1511.0
       },
       "weighted avg": {
-        "precision": 0.8489538679519252,
-        "recall": 0.757114493712773,
-        "f1-score": 0.7824183440988369,
+        "precision": 0.8429181345313905,
+        "recall": 0.7511581733951026,
+        "f1-score": 0.7823748984138725,
         "support": 1511.0
       }
+    },
+    "class_accuracy_definition": "Class-specific accuracy equals recall: correct predictions / actual samples of that class.",
+    "mean_inference_ms_per_track_by_true_class": {
+      "alpha": 2.5760608108169905,
+      "electron_positron": 2.814033303957531,
+      "proton": 2.6020603171283647,
+      "v_track": 2.9683117652038002
     }
   },
   "model_path": "C:\\Users\\User\\Desktop\\Image asg\\CloudChamberDetector\\models\\cnn_classifier.pth"
