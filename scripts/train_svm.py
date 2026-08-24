@@ -25,7 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cloud_chamber.config import load_config
-from cloud_chamber.ml.contour_dataset import build_feature_csv, load_feature_csv
+from cloud_chamber.ml.contour_dataset import build_segmented_feature_csv, load_feature_csv
 from cloud_chamber.ml.member_models.svm import FEATURE_COLUMNS
 
 
@@ -50,6 +50,11 @@ def parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT / "dataset" / "external_dataset_split",
     )
     parser.add_argument(
+        "--primary-split-root",
+        type=Path,
+        default=PROJECT_ROOT / "dataset" / "primary_dataset_split",
+    )
+    parser.add_argument(
         "--feature-dir",
         type=Path,
         default=PROJECT_ROOT / "data" / "features" / "muller",
@@ -59,6 +64,50 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--rebuild-features", action="store_true")
     return parser.parse_args()
+
+
+def _primary_split(source_path: Path, split: str) -> Path:
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    image_ids = {
+        int(image["id"])
+        for image in payload.get("images", [])
+        if image.get("split") == split
+    }
+    if not image_ids:
+        raise ValueError(f"Primary dataset contains no images for split={split!r}")
+    filtered = {
+        **payload,
+        "images": [
+            image for image in payload.get("images", [])
+            if int(image["id"]) in image_ids
+        ],
+        "annotations": [
+            annotation for annotation in payload.get("annotations", [])
+            if int(annotation["image_id"]) in image_ids
+        ],
+    }
+    output = source_path.with_name(f"{split}_annotations_coco.json")
+    output.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
+    return output
+
+
+def _features(
+    annotations: Path,
+    cache: Path,
+    config: dict,
+    labels: set[str],
+    rebuild: bool,
+    roi_profile: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    if rebuild or not cache.exists():
+        build_segmented_feature_csv(
+            annotations,
+            cache,
+            config,
+            allowed_labels=labels,
+            roi_profile_name=roi_profile,
+        )
+    return load_feature_csv(cache, labels)
 
 
 def make_pipeline(parameters: dict, random_seed: int):
@@ -147,23 +196,39 @@ def main() -> int:
     allowed_labels = set(config["classification"]["supported_classes"])
     args.feature_dir.mkdir(parents=True, exist_ok=True)
 
+    primary_source = args.primary_split_root / "annotations_coco.json"
+
     split_tables = {}
     class_counts = {}
     for split in SPLITS:
-        feature_path = args.feature_dir / f"{split}.csv"
-        annotation_path = args.split_root / split / "annotations_coco.json"
-        if args.rebuild_features or not feature_path.exists():
-            print(f"Building labelled contour features: {split}")
-            class_counts[split] = build_feature_csv(
-                annotation_path,
-                feature_path,
-                config["enhancement"],
-                allowed_labels=allowed_labels,
-            )
-        matrix, labels = load_feature_csv(feature_path, allowed_labels)
+        external_x, external_y = _features(
+            args.split_root / split / "annotations_coco.json",
+            args.feature_dir / f"{split}.csv",
+            config,
+            allowed_labels,
+            args.rebuild_features,
+            "external_muller",
+        )
+        primary_x, primary_y = _features(
+            _primary_split(primary_source, split),
+            args.feature_dir / f"primary_{split}.csv",
+            config,
+            allowed_labels,
+            args.rebuild_features,
+            "primary_full_chamber",
+        )
+        matrix = np.concatenate((external_x, primary_x), axis=0)
+        labels = np.concatenate((external_y, primary_y), axis=0)
         split_tables[split] = (matrix, labels)
-        class_counts.setdefault(split, dict(sorted(Counter(labels).items())))
-        print(f"{split}: {len(labels)} tracks {class_counts[split]}")
+        class_counts[split] = {
+            "external": dict(sorted(Counter(external_y).items())),
+            "primary": dict(sorted(Counter(primary_y).items())),
+            "combined": dict(sorted(Counter(labels).items())),
+        }
+        print(
+            f"{split}: {len(labels)} combined tracks "
+            f"(external={len(external_y)}, primary={len(primary_y)})"
+        )
 
     development_x, development_y = split_tables["development"]
     validation_x, validation_y = split_tables["validation"]
@@ -211,6 +276,10 @@ def main() -> int:
 
     report = {
         "method": "StandardScaler + SVC",
+        "feature_source": (
+            "combined primary and external automatic segmentation contours "
+            "labelled by COCO-mask overlap"
+        ),
         "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
         "feature_columns": FEATURE_COLUMNS,
         "class_counts": class_counts,
