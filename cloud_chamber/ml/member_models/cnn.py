@@ -35,9 +35,10 @@ from collections import Counter
 from cloud_chamber.ml.contour_dataset import annotation_to_mask
 
 CLASS_COLOURS = {
-    "alpha": (0, 165, 255),
-    "electron_positron": (255, 120, 0),
-    "proton": (0, 200, 0),
+    # OpenCV uses BGR, not RGB.
+    "alpha": (0, 255, 0),
+    "electron_positron": (255, 0, 0),
+    "proton": (0, 0, 255),
     "v_track": (255, 0, 255),
 }
 DISPLAY_NAMES = {
