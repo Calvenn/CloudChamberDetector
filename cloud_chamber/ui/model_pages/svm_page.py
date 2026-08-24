@@ -542,82 +542,190 @@ def render(context: PageContext) -> None:
 
     st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
     
-    # 8. Individual Track Details (Inspector)
+    # 8. Individual Track Details (Inspector) & Overall Summary
     st.write("")
-    st.subheader("🔍 Individual Track Inspector")
-    
-    track_ids = [track.track_id for track in result["features"]]
-    selected_track_id = st.selectbox("Choose a Track ID to deep-dive", track_ids)
-    
-    selected_idx = track_ids.index(selected_track_id)
-    selected_track_features = result["features"][selected_idx]
-    selected_pred = predictions[selected_idx]
-    
+    st.subheader("🔍 Track Inspector & Overall Feature Analysis")
+
+    raw_track_ids = [track.track_id for track in result["features"]]
+    track_options = ["All Tracks (Overall Summary)", *[f"Track T{tid}" for tid in raw_track_ids]]
+    selected_option = st.selectbox("Choose a Track to inspect or view Overall Summary", track_options)
+
     detail_col1, detail_col2 = st.columns(2)
-    
-    with detail_col1:
-        # Probability chart
-        prob_df = pd.DataFrame([
-            {"Class": DISPLAY_NAMES.get(cls, cls), "Probability": prob}
-            for cls, prob in selected_pred["probabilities"].items()
-        ]).sort_values("Probability", ascending=True)
-        
-        fig_prob = px.bar(
-            prob_df,
-            x="Probability",
-            y="Class",
-            orientation="h",
-            color="Class",
-            color_discrete_map={
-                "Alpha": RGB_COLORS["alpha"],
-                "Electron/Positron": RGB_COLORS["electron_positron"],
-                "Proton": RGB_COLORS["proton"],
-                "V-track": RGB_COLORS["v_track"]
-            },
-            title=f"T{selected_track_id} Class Probabilities"
-        )
-        fig_prob.update_layout(showlegend=False)
-        st.plotly_chart(fig_prob, use_container_width=True)
-        
-        # Trajectory Crop Visual
-        st.markdown("**Trajectory Crop Visual**")
-        x, y, w, h = selected_track_features.bounding_box
-        pad = 20
-        h_img, w_img = result["input_image"].shape[:2]
-        y1, y2 = max(0, y - pad), min(h_img, y + h + pad)
-        x1, x2 = max(0, x - pad), min(w_img, x + w + pad)
 
-        cropped_img = result["input_image"][y1:y2, x1:x2].copy()
+    if selected_option == "All Tracks (Overall Summary)":
+        with detail_col1:
+            # Overall Average Probabilities across all tracks
+            all_class_probs = {cls: [] for cls in DISPLAY_NAMES}
+            for pred in predictions:
+                for cls_name, prob in pred["probabilities"].items():
+                    all_class_probs.setdefault(cls_name, []).append(prob)
 
-        current_contours = result["segmentation"].contours
-        if selected_idx < len(current_contours):
-            selected_contour = current_contours[selected_idx]
-            shifted_contour = selected_contour - np.array([x1, y1])
-            cv2.drawContours(cropped_img, [shifted_contour], -1, (255, 255, 0), 2)
+            avg_probs = {
+                cls: float(np.mean(probs)) if probs else 0.0
+                for cls, probs in all_class_probs.items()
+            }
 
-        st.image(context.bgr_to_rgb(cropped_img), caption=f"Cropped track outline (T{selected_track_id})", width=260)
-        
-    with detail_col2:
-        # Z-Scores Feature Profile Explanation
-        if show_features_contrib and "scaler" in model_bundle["model"].named_steps:
-            scaler = model_bundle["model"].named_steps["scaler"]
-            feature_dict = asdict(selected_track_features)
-            feature_values = [feature_dict[col] for col in FEATURE_COLUMNS]
-            z_scores = (np.array(feature_values) - scaler.mean_) / scaler.scale_
-            
-            z_df = pd.DataFrame({
-                "Feature": FEATURE_COLUMNS,
-                "Z-score": z_scores
-            }).sort_values("Z-score", ascending=True)
-            
-            fig_z = px.bar(
-                z_df,
-                x="Z-score",
-                y="Feature",
+            prob_df = pd.DataFrame([
+                {"Class": DISPLAY_NAMES.get(cls, cls), "Probability": prob}
+                for cls, prob in avg_probs.items()
+            ]).sort_values("Probability", ascending=True)
+
+            fig_prob = px.bar(
+                prob_df,
+                x="Probability",
+                y="Class",
                 orientation="h",
-                title=f"Feature Z-Score Profile (deviation from training mean)"
+                color="Class",
+                color_discrete_map={
+                    "Alpha": RGB_COLORS["alpha"],
+                    "Electron/Positron": RGB_COLORS["electron_positron"],
+                    "Proton": RGB_COLORS["proton"],
+                    "V-track": RGB_COLORS["v_track"]
+                },
+                title="Overall Average Class Probabilities (All Tracks)"
             )
-            st.plotly_chart(fig_z, use_container_width=True)
+            fig_prob.update_layout(showlegend=False)
+            st.plotly_chart(fig_prob, use_container_width=True)
+
+            # Full Frame Contour Visual
+            st.markdown("**All Tracks Contour Overlay**")
+            overlay_all, _ = svm_module.build_visual_report(
+                result["input_image"],
+                result["features"],
+                predictions,
+                conf_threshold
+            )
+            st.image(context.bgr_to_rgb(overlay_all), caption="All detected track outlines color-coded by prediction", use_container_width=True)
+
+        with detail_col2:
+            # Overall Average Z-Score Profile across all tracks
+            if show_features_contrib and "scaler" in model_bundle["model"].named_steps:
+                scaler = model_bundle["model"].named_steps["scaler"]
+                center = getattr(scaler, "center_", getattr(scaler, "mean_", 0))
+                scale = getattr(scaler, "scale_", 1)
+
+                all_z_scores = []
+                for track_feat in result["features"]:
+                    feature_dict = asdict(track_feat)
+                    area = float(feature_dict.get("area_pixels", 0.0))
+                    perimeter = float(feature_dict.get("perimeter_pixels", 0.0))
+                    major_axis = float(feature_dict.get("major_axis_pixels", 0.0))
+                    mean_intensity = float(feature_dict.get("mean_intensity", 0.0))
+
+                    feature_dict.setdefault(
+                        "line_density",
+                        (mean_intensity * area) / major_axis if major_axis > 0 else 0.0,
+                    )
+                    feature_dict.setdefault(
+                        "tortuosity",
+                        perimeter / (2.0 * major_axis) if major_axis > 0 else 1.0,
+                    )
+
+                    feature_values = [float(feature_dict[col]) for col in FEATURE_COLUMNS]
+                    z_scores = (np.array(feature_values) - center) / scale
+                    all_z_scores.append(z_scores)
+
+                avg_z_scores = np.mean(all_z_scores, axis=0) if all_z_scores else np.zeros(len(FEATURE_COLUMNS))
+
+                z_df = pd.DataFrame({
+                    "Feature": FEATURE_COLUMNS,
+                    "Z-score": avg_z_scores
+                }).sort_values("Z-score", ascending=True)
+
+                fig_z = px.bar(
+                    z_df,
+                    x="Z-score",
+                    y="Feature",
+                    orientation="h",
+                    title="Overall Average Feature Z-Score Profile (All Tracks)"
+                )
+                st.plotly_chart(fig_z, use_container_width=True)
+                st.caption("Average Z-score deviation from training center across all detected tracks in this frame.")
+    else:
+        # Extract selected track ID
+        selected_track_id = int(selected_option.replace("Track T", ""))
+        selected_idx = raw_track_ids.index(selected_track_id)
+        selected_track_features = result["features"][selected_idx]
+        selected_pred = predictions[selected_idx]
+
+        with detail_col1:
+            prob_df = pd.DataFrame([
+                {"Class": DISPLAY_NAMES.get(cls, cls), "Probability": prob}
+                for cls, prob in selected_pred["probabilities"].items()
+            ]).sort_values("Probability", ascending=True)
+
+            fig_prob = px.bar(
+                prob_df,
+                x="Probability",
+                y="Class",
+                orientation="h",
+                color="Class",
+                color_discrete_map={
+                    "Alpha": RGB_COLORS["alpha"],
+                    "Electron/Positron": RGB_COLORS["electron_positron"],
+                    "Proton": RGB_COLORS["proton"],
+                    "V-track": RGB_COLORS["v_track"]
+                },
+                title=f"T{selected_track_id} Class Probabilities"
+            )
+            fig_prob.update_layout(showlegend=False)
+            st.plotly_chart(fig_prob, use_container_width=True)
+
+            st.markdown("**Trajectory Crop Visual**")
+            x, y, w, h = selected_track_features.bounding_box
+            pad = 20
+            h_img, w_img = result["input_image"].shape[:2]
+            y1, y2 = max(0, y - pad), min(h_img, y + h + pad)
+            x1, x2 = max(0, x - pad), min(w_img, x + w + pad)
+
+            cropped_img = result["input_image"][y1:y2, x1:x2].copy()
+
+            current_contours = result["segmentation"].contours
+            if selected_idx < len(current_contours):
+                selected_contour = current_contours[selected_idx]
+                shifted_contour = selected_contour - np.array([x1, y1])
+                cv2.drawContours(cropped_img, [shifted_contour], -1, (255, 255, 0), 2)
+
+            st.image(context.bgr_to_rgb(cropped_img), caption=f"Cropped track outline (T{selected_track_id})", width=260)
+
+        with detail_col2:
+            if show_features_contrib and "scaler" in model_bundle["model"].named_steps:
+                scaler = model_bundle["model"].named_steps["scaler"]
+                feature_dict = asdict(selected_track_features)
+                area = float(feature_dict.get("area_pixels", 0.0))
+                perimeter = float(feature_dict.get("perimeter_pixels", 0.0))
+                major_axis = float(feature_dict.get("major_axis_pixels", 0.0))
+                mean_intensity = float(feature_dict.get("mean_intensity", 0.0))
+
+                feature_dict.setdefault(
+                    "line_density",
+                    (mean_intensity * area) / major_axis if major_axis > 0 else 0.0,
+                )
+                feature_dict.setdefault(
+                    "tortuosity",
+                    perimeter / (2.0 * major_axis) if major_axis > 0 else 1.0,
+                )
+
+                feature_values = [feature_dict[col] for col in FEATURE_COLUMNS]
+
+                center = getattr(scaler, "center_", getattr(scaler, "mean_", 0))
+                scale = getattr(scaler, "scale_", 1)
+
+                z_scores = (np.array(feature_values) - center) / scale
+
+                z_df = pd.DataFrame({
+                    "Feature": FEATURE_COLUMNS,
+                    "Z-score": z_scores
+                }).sort_values("Z-score", ascending=True)
+
+                fig_z = px.bar(
+                    z_df,
+                    x="Z-score",
+                    y="Feature",
+                    orientation="h",
+                    title=f"Feature Z-Score Profile (T{selected_track_id})"
+                )
+                st.plotly_chart(fig_z, use_container_width=True)
             st.caption("Positive/Negative Z-scores indicate how many standard deviations the feature value lies above or below the training average.")
 
     # 9. Report Generation & Export Section

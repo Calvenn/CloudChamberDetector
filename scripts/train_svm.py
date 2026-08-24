@@ -16,6 +16,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 from time import perf_counter
+from sklearn.model_selection import ParameterGrid
 
 import joblib
 import numpy as np
@@ -25,20 +26,32 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from cloud_chamber.config import load_config
-from cloud_chamber.ml.contour_dataset import build_feature_csv, load_feature_csv
+from cloud_chamber.ml.contour_dataset import build_segmented_feature_csv, load_feature_csv
 from cloud_chamber.ml.member_models.svm import FEATURE_COLUMNS
 
 
 SPLITS = ("development", "validation", "final_test")
 
-PARAMETER_CANDIDATES = (
-    {"C": 0.1, "kernel": "linear"},
-    {"C": 1.0, "kernel": "linear"},
-    {"C": 10.0, "kernel": "linear"},
-    {"C": 0.1, "kernel": "rbf"},
-    {"C": 1.0, "kernel": "rbf"},
-    {"C": 10.0, "kernel": "rbf"},
-)
+param_grid = [
+    {
+        "kernel": ["linear"],
+        "C": [0.01, 0.1, 1.0, 10.0, 100.0],
+    },
+    {
+        "kernel": ["rbf"],
+        "C": [0.1, 1.0, 10.0, 100.0, 1000.0],
+        "gamma": ["scale", "auto", 0.001, 0.01, 0.1, 1.0],
+    },
+    {
+        "kernel": ["poly"],
+        "C": [0.1, 1.0, 10.0, 100.0],
+        "degree": [2, 3],
+        "gamma": ["scale", "auto"],
+    },
+]
+
+# Generates a list of dictionaries compatible with your training loop
+PARAMETER_CANDIDATES = list(ParameterGrid(param_grid))
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +61,11 @@ def parse_args() -> argparse.Namespace:
         "--split-root",
         type=Path,
         default=PROJECT_ROOT / "dataset" / "external_dataset_split",
+    )
+    parser.add_argument(
+        "--primary-split-root",
+        type=Path,
+        default=PROJECT_ROOT / "dataset" / "primary_dataset_split",
     )
     parser.add_argument(
         "--feature-dir",
@@ -61,53 +79,110 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _primary_split(source_path: Path, split: str) -> Path:
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    image_ids = {
+        int(image["id"])
+        for image in payload.get("images", [])
+        if image.get("split") == split
+    }
+    if not image_ids:
+        raise ValueError(f"Primary dataset contains no images for split={split!r}")
+    filtered = {
+        **payload,
+        "images": [
+            image for image in payload.get("images", [])
+            if int(image["id"]) in image_ids
+        ],
+        "annotations": [
+            annotation for annotation in payload.get("annotations", [])
+            if int(annotation["image_id"]) in image_ids
+        ],
+    }
+    output = source_path.with_name(f"{split}_annotations_coco.json")
+    output.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
+    return output
+
+
+def _features(
+    annotations: Path,
+    cache: Path,
+    config: dict,
+    labels: set[str],
+    rebuild: bool,
+    roi_profile: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    if rebuild or not cache.exists():
+        build_segmented_feature_csv(
+            annotations,
+            cache,
+            config,
+            allowed_labels=labels,
+            roi_profile_name=roi_profile,
+        )
+    raw_matrix, labels_array = load_feature_csv(cache, labels)
+    
+    area = raw_matrix[:, 0]
+    perimeter = raw_matrix[:, 1]
+    major_axis = raw_matrix[:, 2]
+    mean_width = raw_matrix[:, 3]
+    aspect_ratio = raw_matrix[:, 5]
+    solidity = raw_matrix[:, 6]
+    rectangularity = raw_matrix[:, 7]
+    thickness = raw_matrix[:, 8]
+    mean_intensity = raw_matrix[:, 9]
+
+    safe_major = np.where(major_axis > 0, major_axis, 1.0)
+    line_density = np.where(major_axis > 0, (mean_intensity * area) / safe_major, 0.0)
+    tortuosity = np.where(major_axis > 0, perimeter / (2.0 * safe_major), 1.0)
+
+    svm_matrix = np.column_stack([
+        area,
+        perimeter,
+        major_axis,
+        mean_width,
+        aspect_ratio,
+        solidity,
+        rectangularity,
+        thickness,
+        mean_intensity,
+        line_density,
+        tortuosity,
+    ])
+    
+    return svm_matrix, labels_array
+
+
 def make_pipeline(parameters: dict, random_seed: int):
     """Create a scaler and SVM as one indivisible training pipeline."""
     from sklearn.svm import SVC
     from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import StandardScaler
+    from sklearn.preprocessing import RobustScaler
+    from sklearn.calibration import CalibratedClassifierCV
+
+    svc_kwargs = {
+        "C": parameters["C"],
+        "kernel": parameters["kernel"],
+        "class_weight": {
+            "alpha": 1.0,
+            "electron_positron": 2.5,
+            "proton": 0.6,
+            "v_track": 2.0,
+        },
+        "random_state": random_seed,
+    }
+    if "gamma" in parameters:
+        svc_kwargs["gamma"] = parameters["gamma"]
 
     return Pipeline(
         [
-            ("scaler", StandardScaler()),
+            ("scaler", RobustScaler()),
             (
                 "svm",
-                SVC(
-                    C=parameters["C"],
-                    kernel=parameters["kernel"],
-                    probability=True,
-                    random_state=random_seed,
-                ),
+                CalibratedClassifierCV(SVC(**svc_kwargs), method="isotonic", cv=5),
             ),
         ]
     )
-
-
-def balanced_sample_weights(labels: np.ndarray) -> np.ndarray:
-    """Give each class equal total influence despite class imbalance."""
-    counts = Counter(labels.tolist())
-    sample_count = len(labels)
-    class_count = len(counts)
-    return np.asarray(
-        [sample_count / (class_count * counts[label]) for label in labels],
-        dtype=np.float64,
-    )
-
-
-def fit_with_balancing(model, matrix: np.ndarray, labels: np.ndarray, seed: int):
-    """Use sample weights, with deterministic weighted resampling as fallback."""
-    weights = balanced_sample_weights(labels)
-    try:
-        model.fit(matrix, labels, svm__sample_weight=weights)
-        return "inverse-frequency sample weights"
-    except TypeError:
-        generator = np.random.default_rng(seed)
-        probabilities = weights / weights.sum()
-        indices = generator.choice(
-            len(labels), size=len(labels), replace=True, p=probabilities
-        )
-        model.fit(matrix[indices], labels[indices])
-        return "deterministic class-balanced resampling"
 
 
 def evaluate(model, matrix: np.ndarray, labels: np.ndarray) -> dict:
@@ -147,23 +222,39 @@ def main() -> int:
     allowed_labels = set(config["classification"]["supported_classes"])
     args.feature_dir.mkdir(parents=True, exist_ok=True)
 
+    primary_source = args.primary_split_root / "annotations_coco.json"
+
     split_tables = {}
     class_counts = {}
     for split in SPLITS:
-        feature_path = args.feature_dir / f"{split}.csv"
-        annotation_path = args.split_root / split / "annotations_coco.json"
-        if args.rebuild_features or not feature_path.exists():
-            print(f"Building labelled contour features: {split}")
-            class_counts[split] = build_feature_csv(
-                annotation_path,
-                feature_path,
-                config["enhancement"],
-                allowed_labels=allowed_labels,
-            )
-        matrix, labels = load_feature_csv(feature_path, allowed_labels)
+        external_x, external_y = _features(
+            args.split_root / split / "annotations_coco.json",
+            args.feature_dir / f"{split}.csv",
+            config,
+            allowed_labels,
+            args.rebuild_features,
+            "external_muller",
+        )
+        primary_x, primary_y = _features(
+            _primary_split(primary_source, split),
+            args.feature_dir / f"primary_{split}.csv",
+            config,
+            allowed_labels,
+            args.rebuild_features,
+            "primary_full_chamber",
+        )
+        matrix = np.concatenate((external_x, primary_x), axis=0)
+        labels = np.concatenate((external_y, primary_y), axis=0)
         split_tables[split] = (matrix, labels)
-        class_counts.setdefault(split, dict(sorted(Counter(labels).items())))
-        print(f"{split}: {len(labels)} tracks {class_counts[split]}")
+        class_counts[split] = {
+            "external": dict(sorted(Counter(external_y).items())),
+            "primary": dict(sorted(Counter(primary_y).items())),
+            "combined": dict(sorted(Counter(labels).items())),
+        }
+        print(
+            f"{split}: {len(labels)} combined tracks "
+            f"(external={len(external_y)}, primary={len(primary_y)})"
+        )
 
     development_x, development_y = split_tables["development"]
     validation_x, validation_y = split_tables["validation"]
@@ -171,7 +262,8 @@ def main() -> int:
     best = None
     for index, parameters in enumerate(PARAMETER_CANDIDATES, start=1):
         model = make_pipeline(parameters, seed)
-        balancing = fit_with_balancing(model, development_x, development_y, seed)
+        model.fit(development_x, development_y)
+        balancing = "class_weight='balanced'"
         metrics = evaluate(model, validation_x, validation_y)
         record = {
             "candidate": index,
@@ -191,15 +283,23 @@ def main() -> int:
             best = (score, parameters, model, balancing, index)
 
     assert best is not None
-    _, best_parameters, best_model, balancing, best_index = best
+    _, best_parameters, _, balancing, best_index = best
+    
+    # Refit on combined (Development + Validation) data
+    train_x = np.concatenate((development_x, validation_x), axis=0)
+    train_y = np.concatenate((development_y, validation_y), axis=0)
+    
+    final_model = make_pipeline(best_parameters, seed)
+    final_model.fit(train_x, train_y)
+    
     final_x, final_y = split_tables["final_test"]
-    final_metrics = evaluate(best_model, final_x, final_y)
+    final_metrics = evaluate(final_model, final_x, final_y)
     selected_validation = candidates[best_index - 1]["validation"]
 
     bundle = {
-        "model": best_model,
+        "model": final_model,
         "feature_columns": FEATURE_COLUMNS,
-        "classes": tuple(str(value) for value in best_model.classes_),
+        "classes": tuple(str(value) for value in final_model.classes_),
         "selected_parameters": best_parameters,
         "random_seed": seed,
         "balancing": balancing,
@@ -210,7 +310,11 @@ def main() -> int:
     joblib.dump(bundle, args.output)
 
     report = {
-        "method": "StandardScaler + SVC",
+        "method": "RobustScaler + SVC (with Dev+Val Retraining)",
+        "feature_source": (
+            "combined primary and external automatic segmentation contours "
+            "labelled by COCO-mask overlap"
+        ),
         "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
         "feature_columns": FEATURE_COLUMNS,
         "class_counts": class_counts,

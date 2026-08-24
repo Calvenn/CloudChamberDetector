@@ -29,7 +29,7 @@ from cloud_chamber.ml.contour_dataset import (
     build_segmented_feature_csv,
     load_feature_csv,
 )
-from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
+from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS, SoftVotingMLPEnsemble
 
 
 SPLITS = ("development", "validation", "final_test")
@@ -38,12 +38,22 @@ SPLITS = ("development", "validation", "final_test")
 # second 32-neuron layer tests whether additional non-linearity helps without
 # creating an unnecessarily large university-project model.
 PARAMETER_CANDIDATES = (
-    {"hidden_layer_sizes": (32,), "alpha": 0.0001},
-    {"hidden_layer_sizes": (32,), "alpha": 0.001},
-    {"hidden_layer_sizes": (64,), "alpha": 0.0001},
-    {"hidden_layer_sizes": (64,), "alpha": 0.001},
-    {"hidden_layer_sizes": (64, 32), "alpha": 0.0001},
-    {"hidden_layer_sizes": (64, 32), "alpha": 0.001},
+    *(
+        {
+            "hidden_layer_sizes": layers,
+            "alpha": alpha,
+            "activation": activation,
+            "solver": solver,
+            "balancing": balancing,
+        }
+        for layers in ((64,), (64, 32), (128, 64), (128, 64, 32))
+        for alpha in (0.0001, 0.001, 0.01)
+        for activation in ("relu", "tanh")
+        # L-BFGS was substantially slower and did not win validation in the
+        # expanded search; retain Adam for repeatable project retraining.
+        for solver in ("adam",)
+        for balancing in ("none", "sqrt_inverse_frequency")
+    ),
 )
 
 
@@ -65,7 +75,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--feature-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "features" / "muller",
+        default=PROJECT_ROOT / "data" / "features" / "mlp" / "muller",
+    )
+    parser.add_argument(
+        "--primary-roi-profile",
+        default="primary_full_chamber",
+        help="Segmentation profile applied to primary-dataset images.",
     )
     parser.add_argument(
         "--output", type=Path, default=PROJECT_ROOT / "models" / "mlp_classifier.joblib"
@@ -113,6 +128,7 @@ def load_or_build_features(
     allowed_labels: set[str],
     rebuild: bool,
     roi_profile_name: str,
+    merge_annotation_fragments: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Load cached features or build them using the source-specific ROI."""
     if rebuild or not feature_path.exists():
@@ -123,6 +139,7 @@ def load_or_build_features(
             config,
             allowed_labels=allowed_labels,
             roi_profile_name=roi_profile_name,
+            merge_annotation_fragments=merge_annotation_fragments,
         )
     return load_feature_csv(feature_path, allowed_labels)
 
@@ -143,17 +160,17 @@ def make_pipeline(parameters: dict, random_seed: int):
                 "mlp",
                 MLPClassifier(
                     hidden_layer_sizes=parameters["hidden_layer_sizes"],
-                    activation="relu",
-                    solver="adam",
+                    activation=parameters["activation"],
+                    solver=parameters["solver"],
                     alpha=parameters["alpha"],
                     learning_rate_init=0.001,
                     # 500 is a ceiling. Early stopping monitors a stratified
                     # 10% subset of development data and retains the weights
                     # from the best internal validation score.
-                    max_iter=500,
+                    max_iter=1000,
                     tol=0.0001,
                     n_iter_no_change=20,
-                    early_stopping=True,
+                    early_stopping=parameters["solver"] == "adam",
                     validation_fraction=0.1,
                     random_state=random_seed,
                 ),
@@ -173,12 +190,21 @@ def balanced_sample_weights(labels: np.ndarray) -> np.ndarray:
     )
 
 
-def fit_with_balancing(model, matrix: np.ndarray, labels: np.ndarray, seed: int):
+def fit_with_balancing(
+    model, matrix: np.ndarray, labels: np.ndarray, seed: int, strategy: str
+):
     """Use sample weights, with deterministic weighted resampling as fallback."""
+    if strategy == "none":
+        model.fit(matrix, labels)
+        return "none"
     weights = balanced_sample_weights(labels)
+    if strategy == "sqrt_inverse_frequency":
+        # Moderate imbalance correction avoids making the rare V-track class
+        # as influential as alpha despite having far fewer distinct examples.
+        weights = np.sqrt(weights)
     try:
         model.fit(matrix, labels, mlp__sample_weight=weights)
-        return "inverse-frequency sample weights"
+        return strategy.replace("_", " ") + " sample weights"
     except TypeError:
         # Older scikit-learn releases did not accept MLP sample_weight. This
         # equivalent fallback samples training rows with replacement according
@@ -252,6 +278,7 @@ def main() -> int:
             allowed_labels,
             args.rebuild_features,
             "external_muller",
+            True,
         )
         primary_x, primary_y = load_or_build_features(
             primary_filtered,
@@ -259,7 +286,8 @@ def main() -> int:
             config,
             allowed_labels,
             args.rebuild_features,
-            "primary_full_chamber",
+            args.primary_roi_profile,
+            True,
         )
         matrix = np.concatenate((external_x, primary_x), axis=0)
         labels = np.concatenate((external_y, primary_y), axis=0)
@@ -280,7 +308,9 @@ def main() -> int:
     best = None
     for index, parameters in enumerate(PARAMETER_CANDIDATES, start=1):
         model = make_pipeline(parameters, seed)
-        balancing = fit_with_balancing(model, development_x, development_y, seed)
+        balancing = fit_with_balancing(
+            model, development_x, development_y, seed, parameters["balancing"]
+        )
         metrics = evaluate(model, validation_x, validation_y)
         record = {
             "candidate": index,
@@ -288,8 +318,8 @@ def main() -> int:
                 **parameters,
                 "hidden_layer_sizes": list(parameters["hidden_layer_sizes"]),
                 "learning_rate_init": 0.001,
-                "max_iter": 500,
-                "early_stopping": True,
+                "max_iter": 1000,
+                "early_stopping": parameters["solver"] == "adam",
                 "validation_fraction": 0.1,
             },
             "balancing": balancing,
@@ -300,12 +330,39 @@ def main() -> int:
             f"candidate {index}: macro_f1={metrics['macro_f1']:.4f}, "
             f"balanced_accuracy={metrics['balanced_accuracy']:.4f}"
         )
-        score = (metrics["macro_f1"], metrics["balanced_accuracy"])
+        # Treat all particle classes equally. Raw accuracy is dominated by the
+        # common alpha/proton records and previously selected models with very
+        # weak V-track recall. Accuracy is retained only as the final tie-break.
+        score = (
+            metrics["macro_f1"],
+            metrics["balanced_accuracy"],
+            metrics["accuracy"],
+        )
         if best is None or score > best[0]:
             best = (score, parameters, model, balancing, index)
 
     assert best is not None
-    _, best_parameters, best_model, balancing, best_index = best
+    _, best_parameters, _, _, best_index = best
+    # Hyperparameters are now fixed, so use all non-test labels for the final
+    # fit. The held-out final-test split remains untouched until this point.
+    refit_x = np.concatenate((development_x, validation_x), axis=0)
+    refit_y = np.concatenate((development_y, validation_y), axis=0)
+    ensemble_members = []
+    balancing_methods = []
+    for member_seed in range(seed, seed + 5):
+        member = make_pipeline(best_parameters, member_seed)
+        balancing_methods.append(
+            fit_with_balancing(
+                member,
+                refit_x,
+                refit_y,
+                member_seed,
+                best_parameters["balancing"],
+            )
+        )
+        ensemble_members.append(member)
+    best_model = SoftVotingMLPEnsemble(ensemble_members)
+    balancing = balancing_methods[0]
     # The untouched final-test split is used only after validation has selected
     # the candidate; it never influences model or parameter selection.
     final_x, final_y = split_tables["final_test"]
@@ -319,6 +376,7 @@ def main() -> int:
         "selected_parameters": best_parameters,
         "random_seed": seed,
         "balancing": balancing,
+        "ensemble_members": len(ensemble_members),
         "validation_metrics": selected_validation,
         "final_test_metrics": final_metrics,
     }
@@ -331,7 +389,11 @@ def main() -> int:
             "combined primary and external automatic segmentation contours "
             "labelled by COCO-mask overlap"
         ),
-        "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
+        "selection_metric": (
+            "validation macro F1; balanced accuracy and accuracy tie-breakers"
+        ),
+        "final_fit_source": "development + validation after hyperparameter selection",
+        "ensemble_members": len(ensemble_members),
         "feature_columns": FEATURE_COLUMNS,
         "class_counts": class_counts,
         "candidate_results": candidates,
