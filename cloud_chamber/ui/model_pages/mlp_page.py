@@ -88,11 +88,23 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         batch_results = {}
         progress = st.progress(0.0, text="Processing batch...")
         for index, sample in enumerate(samples):
-            sample_result = context.process_pipeline_image(
-                sample["image"],
-                config,
-                st.session_state.get("calibration_settings"),
+            current_result = st.session_state.get("pipeline_result")
+            is_current_single_input = (
+                len(samples) == 1
+                and current_result is not None
+                and sample["name"] == st.session_state.get("input_name")
             )
+            if is_current_single_input:
+                # Classification must consume the exact mask displayed by the
+                # shared pipeline. Reprocessing here previously used different
+                # rectification state and could create additional contours.
+                sample_result = current_result
+            else:
+                sample_result = context.process_pipeline_image(
+                    sample["image"],
+                    config,
+                    st.session_state.get("calibration_settings"),
+                )
             sample_predictions = model_predict(
                 model_bundle, sample_result["features"]
             )
@@ -167,6 +179,7 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
                             predictions=item_predictions,
                             confidence_threshold=confidence_threshold,
                             quality_assessments=item_quality,
+                            instance_mask=item_result["segmentation"].binary_mask,
                         )
                     else:
                         item_overlay, _ = model_viz(
@@ -215,6 +228,10 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
             confidence_threshold=confidence_threshold,
             quality_assessments=quality_assessments,
             original_boxes=result.get("original_bounding_boxes"),
+            instance_mask=result.get(
+                "original_segmentation_mask",
+                result["segmentation"].binary_mask,
+            ),
         )
     else:
         overlay, report_rows = model_viz(
@@ -361,6 +378,10 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         confidence_threshold=confidence_threshold,
         quality_assessments=filtered_quality,
         original_boxes=filtered_boxes,
+        instance_mask=result.get(
+            "original_segmentation_mask",
+            result["segmentation"].binary_mask,
+        ),
     )
     st.image(
         context.bgr_to_rgb(filtered_overlay),
@@ -370,7 +391,8 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
     )
     st.markdown(
         "**Legend:** 🟧 Alpha · 🟦 Electron/Positron · 🟩 Proton · "
-        "🟪 V-track · 🟨 Uncertain · Grey dashed: review segmentation"
+        "🟪 V-track · Uncertain predictions retain their class colour · "
+        "Grey dashed: review segmentation"
     )
     compact_rows = [
         {
@@ -462,7 +484,7 @@ def _render_mlp_output_charts(
 
     display_colours = {
         "Alpha": "#FFA500",
-        "Electron/Positron": "#0078FF",
+        "Electron/Positron": "#28C8FF",
         "Proton": "#00C800",
         "V-track": "#FF00FF",
     }
@@ -521,11 +543,7 @@ def _render_mlp_output_charts(
     particle_types = [str(item["particle_type"]) for item in predictions]
     confidence_colours = [
         display_colours.get(particle_type, "#A0A0A0")
-        if confidence >= confidence_threshold
-        else "#FFD700"
-        for particle_type, confidence in zip(
-            particle_types, confidences, strict=True
-        )
+        for particle_type in particle_types
     ]
     confidence_figure = go.Figure(
         go.Bar(

@@ -33,13 +33,20 @@ FEATURE_COLUMNS = (
     "rectangularity",
     "thickness_pixels",
     "mean_intensity",
+    "intensity_stddev",
+    "circularity",
+    "convexity",
+    "perimeter_to_major_axis",
+    "orientation_sin_2x",
+    "orientation_cos_2x",
 )
 
-# BGR colours are intentionally fixed so a class has the same visual identity
-# in every exported report. Yellow is reserved for uncertain predictions.
+# BGR colours are intentionally fixed so a predicted class has the same visual
+# identity even when its confidence status is uncertain.
 CLASS_COLOURS = {
     "alpha": (0, 165, 255),
-    "electron_positron": (255, 120, 0),
+    # Bright sky blue remains visible over the chamber's dark blue-grey fog.
+    "electron_positron": (255, 200, 40),
     "proton": (0, 200, 0),
     "v_track": (255, 0, 255),
 }
@@ -49,6 +56,29 @@ DISPLAY_NAMES = {
     "proton": "Proton",
     "v_track": "V-track",
 }
+
+
+class SoftVotingMLPEnsemble:
+    """Average independently seeded MLP probabilities to reduce variance."""
+
+    def __init__(self, models: list) -> None:
+        if not models:
+            raise ValueError("MLP ensemble requires at least one fitted model")
+        classes = tuple(str(value) for value in models[0].classes_)
+        if any(tuple(str(value) for value in model.classes_) != classes for model in models):
+            raise ValueError("Every MLP ensemble member must use identical classes")
+        self.models = models
+        self.classes_ = np.asarray(classes, dtype=object)
+
+    def predict_proba(self, matrix: np.ndarray) -> np.ndarray:
+        return np.mean(
+            np.stack([model.predict_proba(matrix) for model in self.models]),
+            axis=0,
+        )
+
+    def predict(self, matrix: np.ndarray) -> np.ndarray:
+        probabilities = self.predict_proba(matrix)
+        return self.classes_[np.argmax(probabilities, axis=1)]
 
 
 def features_to_matrix(features: Iterable[TrackFeatures]) -> np.ndarray:
@@ -68,8 +98,15 @@ def load_model(model_path: str | Path):
             f"MLP model not found: {path}. Run scripts/train_mlp.py first."
         )
     bundle = joblib.load(path)
-    if tuple(bundle["feature_columns"]) != FEATURE_COLUMNS:
-        raise ValueError("Saved MLP uses a different feature-column contract")
+    saved_columns = tuple(bundle["feature_columns"])
+    if saved_columns != FEATURE_COLUMNS:
+        raise ValueError(
+            "Saved MLP uses a different feature-column contract "
+            f"(saved={len(saved_columns)}, runtime={len(FEATURE_COLUMNS)}). "
+            "If the model was just retrained, fully restart Streamlit so it "
+            "reloads cloud_chamber.features and the MLP module. Otherwise, "
+            "retrain with scripts/train_mlp.py --rebuild-features."
+        )
     return bundle
 
 
@@ -113,6 +150,7 @@ def build_visual_report(
     confidence_threshold: float = 0.60,
     quality_assessments: list[dict] | None = None,
     original_boxes: list[dict] | None = None,
+    instance_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, list[dict]]:
     """Draw classified tracks and build the matching tabular report.
 
@@ -128,6 +166,15 @@ def build_visual_report(
     }
 
     overlay = image.copy()
+    component_labels = None
+    component_stats = None
+    used_components: set[int] = set()
+    if instance_mask is not None:
+        if instance_mask.shape != image.shape[:2]:
+            raise ValueError("Instance mask and report image must have equal size")
+        _, component_labels, component_stats, _ = cv2.connectedComponentsWithStats(
+            (instance_mask > 0).astype(np.uint8), connectivity=8
+        )
     rows = []
     for index, (track, prediction) in enumerate(
         zip(feature_list, predictions, strict=True)
@@ -144,18 +191,35 @@ def build_visual_report(
         low_quality = quality is not None and int(quality["score"]) < 50
         if low_quality:
             colour = (160, 160, 160)
-        elif uncertain:
-            colour = (0, 255, 255)
         else:
             colour = CLASS_COLOURS.get(
                 prediction["predicted_class"], (255, 255, 255)
             )
 
-        # The same track ID connects the picture, feature table and CSV row.
-        if low_quality:
-            _draw_dashed_rectangle(
-                overlay, (x, y), (x + width, y + height), colour
+        # Colour the exact segmented component used by classification. Boxes
+        # remain only as a fallback for callers without an instance mask.
+        component_id = _match_component_to_box(
+            component_stats,
+            (x, y, width, height),
+            used_components,
+        )
+        if component_id is not None and component_labels is not None:
+            used_components.add(component_id)
+            region = component_labels == component_id
+            colour_array = np.asarray(colour, dtype=np.float32)
+            overlay[region] = np.clip(
+                overlay[region].astype(np.float32) * 0.48
+                + colour_array * 0.52,
+                0,
+                255,
+            ).astype(np.uint8)
+            region_mask = (region.astype(np.uint8) * 255)
+            outlines, _ = cv2.findContours(
+                region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
+            cv2.drawContours(overlay, outlines, -1, colour, 2, cv2.LINE_AA)
+        elif low_quality:
+            _draw_dashed_rectangle(overlay, (x, y), (x + width, y + height), colour)
         else:
             cv2.rectangle(overlay, (x, y), (x + width, y + height), colour, 2)
         status = (
@@ -166,9 +230,10 @@ def build_visual_report(
             else "Accepted"
         )
         quality_text = f" | Q:{quality['grade']}" if quality else ""
+        uncertainty_text = " | Uncertain" if uncertain and not low_quality else ""
         label = (
             f"T{track.track_id}: {prediction['particle_type']} "
-            f"{confidence:.0%}{quality_text}"
+            f"{confidence:.0%}{uncertainty_text}{quality_text}"
         )
         text_y = max(y - 7, 16)
         cv2.putText(
@@ -202,6 +267,32 @@ def build_visual_report(
             }
         )
     return overlay, rows
+
+
+def _match_component_to_box(
+    stats: np.ndarray | None,
+    box: tuple[int, int, int, int],
+    used_components: set[int],
+) -> int | None:
+    """Match a reported box to the unused mask component with greatest IoU."""
+    if stats is None or len(stats) <= 1:
+        return None
+    x, y, width, height = box
+    best_id = None
+    best_iou = 0.0
+    for component_id in range(1, len(stats)):
+        if component_id in used_components:
+            continue
+        cx, cy, cw, ch, _ = (int(value) for value in stats[component_id])
+        intersection_width = max(0, min(x + width, cx + cw) - max(x, cx))
+        intersection_height = max(0, min(y + height, cy + ch) - max(y, cy))
+        intersection = intersection_width * intersection_height
+        union = width * height + cw * ch - intersection
+        iou = intersection / union if union > 0 else 0.0
+        if iou > best_iou:
+            best_iou = iou
+            best_id = component_id
+    return best_id if best_iou > 0 else None
 
 
 def _draw_dashed_rectangle(

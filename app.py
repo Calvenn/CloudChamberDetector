@@ -82,7 +82,6 @@ def main() -> None:
     _initialise_state()
 
     st.sidebar.title("Cloud Chamber")
-    st.sidebar.caption("BMDS2133 Mode A comparative study")
     page = st.sidebar.radio("Navigate", PAGES)
     _input_status()
 
@@ -140,7 +139,7 @@ def _initialise_state() -> None:
 
 
 def _shared_pipeline_page(config: dict) -> None:
-    st.title("Shared Image Processing Pipeline")
+    st.title("Image Processing Pipeline")
 
     st.header("Image or video-frame acquisition")
     _acquisition_section(config)
@@ -207,18 +206,30 @@ def _shared_pipeline_page(config: dict) -> None:
     st.session_state["svm_predictions"] = None
     st.session_state["svm_quality"] = None
     st.session_state["extra_trees_predictions"] = None
+    # Batch classifier pages cache their own pipeline outputs. Clear them as
+    # well, otherwise they can display contours from an older segmentation run.
+    st.session_state["mlp_batch_results"] = {}
+    st.session_state["decision_tree_batch_results"] = {}
+    st.session_state["svm_batch_results"] = {}
+    st.session_state["extra_trees_batch_results"] = {}
     st.session_state["batch_reports"].pop(
         st.session_state.get("input_name"), None
     )
 
-    overlay = image.copy()
-    # These boxes come only from the accepted contours used to create the
-    # clean mask above. Rejected and out-of-ROI contours cannot appear here.
-    for item in result["original_bounding_boxes"]:
-        x, y = int(round(item["x"])), int(round(item["y"]))
-        width, height = int(round(item["width"])), int(round(item["height"]))
-        cv2.rectangle(overlay, (x, y), (x + width, y + height), (0, 255, 255), 2)
-    st.image(_bgr_to_rgb(overlay), caption="Final detections on original full-resolution image")
+    overlay = _colour_instance_mask(
+        image, result["original_segmentation_mask"], opacity=0.52
+    )
+    st.image(
+        _bgr_to_rgb(overlay),
+        caption=(
+            "Final instance segmentation: each continuous coloured region is "
+            "one detected particle track"
+        ),
+    )
+    st.caption(
+        f"Segmented particle instances: {len(features)}. The classification "
+        "page must report the same count for this pipeline run."
+    )
 
     st.header("Contour-based feature extraction")
     rows = [
@@ -936,6 +947,14 @@ def _process_tiled_pipeline_image(
     ]
 
     inverse_rectification = np.linalg.inv(rectification_transform)
+    original_segmentation_mask = cv2.warpPerspective(
+        merged_mask,
+        inverse_rectification,
+        (original_width, original_height),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
     original_boxes = []
     for x, y, width, height in bounding_boxes:
         points = np.asarray(
@@ -994,6 +1013,7 @@ def _process_tiled_pipeline_image(
         "coverage_map": coverage,
         "tile_boundary_preview": draw_tile_boundaries(processing_copy, tiles),
         "original_bounding_boxes": original_boxes,
+        "original_segmentation_mask": original_segmentation_mask,
     }
 
 
@@ -1085,6 +1105,7 @@ def _video_acquisition(upload, config: dict) -> None:
             st.image(
                 _bgr_to_rgb(frame),
                 caption=f"Frame {frame_number} ({timestamp:.2f} seconds)",
+                width=480,
             )
             if st.button("Load preview frame only"):
                 sample = _video_sample(upload.name, frame, frame_number, fps)
@@ -1264,7 +1285,7 @@ def _batch_selector() -> None:
                 st.image(
                     _bgr_to_rgb(sample["image"]),
                     caption=sample["description"],
-                    use_container_width=True,
+                    width=420,
                 )
 
 
@@ -2798,6 +2819,37 @@ def _decode_uploaded_image(data: bytes) -> np.ndarray:
     if image is None:
         raise ValueError("Uploaded data is not a readable image")
     return image
+
+
+def _colour_instance_mask(
+    image: np.ndarray,
+    binary_mask: np.ndarray,
+    opacity: float = 0.45,
+) -> np.ndarray:
+    """Colour every connected accepted track while preserving image detail."""
+    if image.shape[:2] != binary_mask.shape:
+        raise ValueError("Instance mask must match the displayed image size")
+    if not 0.0 <= opacity <= 1.0:
+        raise ValueError("Overlay opacity must be between zero and one")
+    component_count, labels = cv2.connectedComponents(
+        (binary_mask > 0).astype(np.uint8), connectivity=8
+    )
+    segmentation_colour = (0, 210, 255)
+    output = image.copy()
+    colour_layer = image.copy()
+    for component_id in range(1, component_count):
+        region = labels == component_id
+        colour_layer[region] = segmentation_colour
+    foreground = labels > 0
+    blended = cv2.addWeighted(image, 1.0 - opacity, colour_layer, opacity, 0)
+    output[foreground] = blended[foreground]
+    contours, _ = cv2.findContours(
+        (foreground.astype(np.uint8) * 255),
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+    cv2.drawContours(output, contours, -1, (0, 255, 255), 2, cv2.LINE_AA)
+    return output
 
 
 def _bgr_to_rgb(image: np.ndarray) -> np.ndarray:

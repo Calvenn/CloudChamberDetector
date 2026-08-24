@@ -23,6 +23,12 @@ class TrackFeatures:
     rectangularity: float
     thickness_pixels: float
     mean_intensity: float
+    intensity_stddev: float
+    circularity: float
+    convexity: float
+    perimeter_to_major_axis: float
+    orientation_sin_2x: float
+    orientation_cos_2x: float
     bounding_box: BoundingBox
 
 
@@ -54,13 +60,22 @@ def extract_track_features(
 
         region_mask = np.zeros_like(binary_mask)
         cv2.drawContours(region_mask, [contour], -1, 255, thickness=cv2.FILLED)
-        mean_intensity = float(cv2.mean(enhanced_image, mask=region_mask)[0])
+        intensity_mean, intensity_stddev = cv2.meanStdDev(
+            enhanced_image, mask=region_mask
+        )
+        mean_intensity = float(intensity_mean[0, 0])
+        intensity_stddev_value = float(intensity_stddev[0, 0])
+        perimeter = float(cv2.arcLength(contour, closed=True))
+        hull_perimeter = float(
+            cv2.arcLength(cv2.convexHull(contour), closed=True)
+        )
+        orientation_radians = np.deg2rad(2.0 * orientation)
 
         features.append(
             TrackFeatures(
                 track_id=len(features) + 1,
                 area_pixels=area,
-                perimeter_pixels=float(cv2.arcLength(contour, closed=True)),
+                perimeter_pixels=perimeter,
                 major_axis_pixels=major_axis,
                 mean_width_pixels=mean_width,
                 orientation_degrees=orientation,
@@ -69,6 +84,20 @@ def extract_track_features(
                 rectangularity=area / rectangle_area if rectangle_area > 0 else 0.0,
                 thickness_pixels=mean_width,
                 mean_intensity=mean_intensity,
+                intensity_stddev=intensity_stddev_value,
+                circularity=(
+                    4.0 * np.pi * area / (perimeter * perimeter)
+                    if perimeter > 0
+                    else 0.0
+                ),
+                convexity=(
+                    hull_perimeter / perimeter if perimeter > 0 else 0.0
+                ),
+                perimeter_to_major_axis=(
+                    perimeter / major_axis if major_axis > 0 else 0.0
+                ),
+                orientation_sin_2x=float(np.sin(orientation_radians)),
+                orientation_cos_2x=float(np.cos(orientation_radians)),
                 bounding_box=(x, y, width, height),
             )
         )
