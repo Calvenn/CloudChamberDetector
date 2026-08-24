@@ -8,6 +8,54 @@ from typing import Any
 import cv2
 import numpy as np
 
+
+def scale_pixel_parameters(
+    settings: dict,
+    reference_size: int,
+    processing_size: tuple[int, int],
+) -> dict:
+    """Preserve existing pixel-parameter proportions at a new resolution.
+
+    This does not introduce a new enhancement or segmentation technique. It
+    converts parameters previously expressed at the 1920-pixel reference into
+    equivalent lengths and areas at the configured ROI processing size.
+    """
+    if reference_size < 2:
+        raise ValueError("Pixel-parameter reference size must exceed one")
+    ratio = max(processing_size) / float(reference_size)
+    scaled = dict(settings)
+
+    for name in (
+        "minimum_major_axis",
+        "minimum_thin_perimeter",
+        "minimum_thin_major_axis",
+        "alignment_merge_gap",
+    ):
+        if name in scaled:
+            scaled[name] = max(1, int(round(float(scaled[name]) * ratio)))
+
+    for name in ("minimum_object_area", "minimum_thin_area"):
+        if name in scaled:
+            scaled[name] = max(1, int(round(float(scaled[name]) * ratio * ratio)))
+
+    for name in (
+        "top_hat_kernel",
+        "closing_kernel",
+        "opening_kernel",
+        "directional_closing_length",
+    ):
+        if name in scaled:
+            value = max(1, int(round(float(scaled[name]) * ratio)))
+            scaled[name] = value if value % 2 == 1 else value + 1
+
+    if "hysteresis_seed_pixels" in scaled:
+        scaled["hysteresis_seed_pixels"] = max(
+            1, int(round(float(scaled["hysteresis_seed_pixels"]) * ratio * ratio))
+        )
+    scaled["pixel_parameter_scale"] = ratio
+    scaled["pixel_parameter_reference_size"] = int(reference_size)
+    return scaled
+
 from cloud_chamber.models import SegmentationResult
 
 
@@ -19,6 +67,14 @@ def segment_tracks(
     """Segment bright particle tracks and return their external contours."""
     if enhanced_image.ndim != 2 or enhanced_image.dtype != np.uint8:
         raise ValueError("Segmentation input must be an 8-bit grayscale image")
+    threshold_method = str(
+        settings.get("threshold_method", "white_tophat_otsu_hysteresis")
+    )
+    if threshold_method != "white_tophat_otsu_hysteresis":
+        raise ValueError(
+            "Unsupported threshold_method. Expected "
+            "'white_tophat_otsu_hysteresis'."
+        )
 
     started = perf_counter()
     top_hat_size = int(settings["top_hat_kernel"])
@@ -171,10 +227,41 @@ def segment_tracks(
         # Preserve the closed mask exactly. Noise rejection is performed using
         # contour area, length and aspect ratio below, rather than erosion.
         refined = closed.copy()
-
+    refined = cv2.bitwise_and(refined, roi_mask)
     found, _ = cv2.findContours(
         refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
+    # Link plausible fragments before size filtering. Previously, alignment
+    # merging ran only after filtering, so short sections of one long dotted
+    # track were discarded before they had a chance to form a valid contour.
+    alignment_merge_gap = float(settings.get("alignment_merge_gap", 0))
+    alignment_merge_angle = float(settings.get("alignment_merge_angle", 25))
+    alignment_merge_minimum_aspect = float(
+        settings.get("alignment_merge_minimum_aspect", 2.5)
+    )
+    prefilter_alignment_links = 0
+    prefilter_alignment_minimum_aspect = float(
+        settings.get(
+            "prefilter_alignment_minimum_aspect",
+            alignment_merge_minimum_aspect,
+        )
+    )
+    if (
+        bool(settings.get("prefilter_alignment_merge", True))
+        and alignment_merge_gap > 0
+        and len(found) > 1
+    ):
+        refined, prefilter_alignment_links = _link_aligned_contours(
+            refined,
+            found,
+            maximum_gap=alignment_merge_gap,
+            maximum_angle_difference=alignment_merge_angle,
+            minimum_aspect_ratio=prefilter_alignment_minimum_aspect,
+        )
+        refined = cv2.bitwise_and(refined, roi_mask)
+        found, _ = cv2.findContours(
+            refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+        )
     minimum_area = float(settings["minimum_object_area"])
     minimum_major_axis = float(settings["minimum_major_axis"])
     minimum_thin_area = float(settings["minimum_thin_area"])
@@ -194,6 +281,13 @@ def segment_tracks(
         minor_axis = float(min(side_a, side_b))
         aspect_ratio = major_axis / minor_axis if minor_axis > 0 else 0.0
         x, y, width, height = cv2.boundingRect(contour)
+
+        # Reject any contour whose center lies outside the active ROI bounds
+        cx = x + width // 2
+        cy = y + height // 2
+        if cx < roi_left or cx >= roi_right or cy < roi_top or cy >= roi_bottom:
+            rejected_contours.append(contour)
+            continue
 
         # A general path retains substantial tracks, while the second path
         # preserves thin electron-like contours near their labelled lower-tail
@@ -232,11 +326,6 @@ def segment_tracks(
     clean_mask = np.zeros_like(refined)
     if contours:
         cv2.drawContours(clean_mask, contours, -1, 255, cv2.FILLED)
-    alignment_merge_gap = float(settings.get("alignment_merge_gap", 0))
-    alignment_merge_angle = float(settings.get("alignment_merge_angle", 25))
-    alignment_merge_minimum_aspect = float(
-        settings.get("alignment_merge_minimum_aspect", 2.5)
-    )
     alignment_links = 0
     if alignment_merge_gap > 0 and len(contours) > 1:
         clean_mask, alignment_links = _link_aligned_contours(
@@ -246,6 +335,7 @@ def segment_tracks(
             maximum_angle_difference=alignment_merge_angle,
             minimum_aspect_ratio=alignment_merge_minimum_aspect,
         )
+    clean_mask = cv2.bitwise_and(clean_mask, roi_mask)
     # Re-read contours from the final accepted mask. This guarantees that the
     # returned contours and bounding boxes describe exactly the same white
     # regions shown in the GUI and later used for feature extraction.
@@ -261,7 +351,7 @@ def segment_tracks(
     ]
 
     return SegmentationResult(
-        method_name="Otsu thresholding + morphological opening/closing",
+        method_name="Otsu-guided hysteresis + morphological refinement",
         binary_mask=clean_mask,
         bounding_boxes=boxes,
         contours=final_contours,
@@ -276,7 +366,8 @@ def segment_tracks(
             "rejected_small_blobs": rejected_mask,
         },
         parameters={
-            "threshold": "White top-hat + Otsu plus offset",
+            "threshold": "White top-hat + Otsu-guided hysteresis",
+            "threshold_method": threshold_method,
             "top_hat_kernel": top_hat_size,
             "otsu_value": float(otsu_value),
             "threshold_offset": float(settings["threshold_offset"]),
@@ -291,6 +382,10 @@ def segment_tracks(
             "closing_kernel": closing_size,
             "directional_closing_length": directional_length,
             "alignment_merge_gap": alignment_merge_gap,
+            "prefilter_alignment_minimum_aspect": (
+                prefilter_alignment_minimum_aspect
+            ),
+            "prefilter_alignment_links_created": prefilter_alignment_links,
             "alignment_links_created": alignment_links,
             "opening_kernel": opening_size,
             "opening_applied": opening_applied,

@@ -8,16 +8,16 @@ splits so their results can be compared fairly.
 
 1. Acquire one image, a batch of images, or sampled frames from an
    MP4/AVI/MOV video.
-2. Optionally calibrate the image using a known physical reference and apply
-   four-corner perspective rectification when the chamber is viewed at an angle.
-3. Convert BGR/RGB to grayscale.
-4. Apply Gaussian filtering.
-5. Apply Otsu binary thresholding.
-6. Refine the mask using morphological opening and closing.
-7. Detect external contours.
-8. Extract area, perimeter, length, width, aspect ratio, solidity,
+2. Apply four-corner perspective rectification to a processing copy.
+3. Divide the complete image automatically into overlapping square tiles.
+4. Spatially scale every tile to the fixed processing resolution.
+5. Convert BGR/RGB to grayscale and apply Gaussian filtering.
+6. Apply Otsu binary thresholding.
+7. Refine the mask using morphological opening and closing.
+8. Detect external contours.
+9. Extract area, perimeter, length, width, aspect ratio, solidity,
    rectangularity, thickness, orientation and mean intensity.
-9. Classify the common features using CNN, SVM, Decision Tree, MLP or
+10. Classify the common features using CNN, SVM, Decision Tree, MLP or
    Extremely Randomised Trees (Extra Trees).
 
 CLAHE, background subtraction, edge detection, Hough transforms, watershed
@@ -36,21 +36,12 @@ Do not run `python app.py`; Streamlit requires its own runner.
 
 ### Image calibration
 
-Spatial scaling is optional because a physical scale cannot be recovered from
-an ordinary image without a known reference. Perspective rectification is an
-independent control and can be enabled while measurements remain in pixels.
-To obtain physical units, enable **spatial calibration**, enter a real reference length in
-centimetres and the pixel coordinates of its two endpoints. The calculated
-`cm/pixel` scale adds physical length, width, perimeter, thickness and area to
-the feature tables and reports.
-
-If the camera views the rectangular chamber at an angle, enable perspective
-rectification. The application automatically fills editable top-left,
-top-right, bottom-right and bottom-left coordinates and shows their boundary
-on the image; correct the values if the preview does not follow the chamber.
-The reference endpoints are transformed through the same homography before the
-final scale is calculated. Do not enable calibration or claim centimetre
-measurements when no reliable physical reference is visible.
+Perspective rectification corrects an angled chamber view before spatial
+scaling. The application automatically estimates editable top-left, top-right,
+bottom-right and bottom-left points on the complete image processing copy.
+Correct these values if the preview boundary does not follow the chamber. Rectification and
+spatial scaling standardise geometry in pixels; they do not create centimetre
+measurements without a known physical reference.
 
 On **Shared Processing Pipeline**, choose **Image** to upload several image
 files together and press **Load image batch**. Choose **Video** to preview one
@@ -101,13 +92,29 @@ python -m cloud_chamber.cli analyse "path\to\image.jpg"
 | `config.yaml` | Fixed Gaussian, threshold/morphology and dataset settings. |
 | `cloud_chamber/acquisition.py` | Image loading, video discovery and frame extraction. |
 | `cloud_chamber/enhancement.py` | Grayscale conversion followed by Gaussian filtering only. |
-| `cloud_chamber/calibration.py` | Known-reference spatial scaling and optional perspective rectification. |
+| `cloud_chamber/calibration.py` | Perspective rectification and its coordinate transform. |
+| `cloud_chamber/tiling.py` | Full-coverage overlapping tiles, tile scaling, padding, coverage validation and mask merging. |
 | `cloud_chamber/segmentation.py` | Otsu thresholding, opening, closing and contour detection. |
 | `cloud_chamber/features.py` | Common contour-based feature extraction. |
 | `cloud_chamber/pipeline.py` | Integrates all shared processing stages. |
 
 Members must not duplicate or change the shared stages during model
 comparison. Parameters are tuned using validation data and then fixed.
+
+The shared GUI preserves the uploaded source image and automatically covers a
+rectified processing copy with overlapping square tiles. Every tile is scaled
+to the single configured processing resolution before enhancement and
+detection. Accepted tile masks are mapped into the full-image coordinate space
+and combined before contours and features are extracted, removing overlap
+duplicates without relying only on bounding-box suppression. The final boxes
+are displayed on the original full-resolution image. If this geometric
+preprocessing changes, rebuild cached contour features and retrain all
+classifiers before comparing model results.
+
+`config.yaml` centralises `tile_size`, `overlap_ratio`, `processing_width` and
+`processing_height`. The current 15% overlap is an initial experimental value,
+not a claim of universal optimality. The debug expander shows tile boundaries,
+per-tile transformation metadata and the verified minimum coverage count.
 
 ## Team-member implementation files
 
@@ -254,7 +261,8 @@ control is shown on the Shared Processing Pipeline page:
   reduced unmatched contours from 400 to 56 and gave the best tested one-to-one
   box F1 (`0.239`).
 
-The ROI is applied before morphological closing. Only accepted regions inside
-it form the final mask. Contours are then read again from that exact final mask;
-the same contours generate both yellow bounding boxes and feature vectors.
+Each tile is segmented before its accepted mask is mapped back to the common
+full-image space. Overlapping masks are combined, and contours are then read
+once from that merged mask; the same contours generate both yellow bounding
+boxes and feature vectors.
 

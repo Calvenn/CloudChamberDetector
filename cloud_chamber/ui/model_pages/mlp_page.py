@@ -1,6 +1,8 @@
 """MLP Streamlit page and report components."""
+import json
 from pathlib import Path
 import numpy as np
+import plotly.graph_objects as go
 import streamlit as st
 import cloud_chamber.ml.member_models.svm as svm_module
 from cloud_chamber.ml.member_models.decision_tree import (build_visual_report as decision_tree_build_visual_report, encode_report_csv as decision_tree_encode_report_csv, encode_report_png as decision_tree_encode_report_png, load_model as decision_tree_load_model, predict_tracks as decision_tree_predict_tracks)
@@ -57,6 +59,7 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         st.warning(f"Train the model first: `{train_command}`")
         return
     model_bundle = model_loader(model_path)
+    _render_mlp_model_performance(Path("models/mlp_training_report.json"))
     confidence_threshold = st.slider(
         "Confidence reporting threshold",
         min_value=0.0,
@@ -85,11 +88,23 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         batch_results = {}
         progress = st.progress(0.0, text="Processing batch...")
         for index, sample in enumerate(samples):
-            sample_result = context.process_pipeline_image(
-                sample["image"],
-                config,
-                st.session_state.get("calibration_settings"),
+            current_result = st.session_state.get("pipeline_result")
+            is_current_single_input = (
+                len(samples) == 1
+                and current_result is not None
+                and sample["name"] == st.session_state.get("input_name")
             )
+            if is_current_single_input:
+                # Classification must consume the exact mask displayed by the
+                # shared pipeline. Reprocessing here previously used different
+                # rectification state and could create additional contours.
+                sample_result = current_result
+            else:
+                sample_result = context.process_pipeline_image(
+                    sample["image"],
+                    config,
+                    st.session_state.get("calibration_settings"),
+                )
             sample_predictions = model_predict(
                 model_bundle, sample_result["features"]
             )
@@ -164,6 +179,7 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
                             predictions=item_predictions,
                             confidence_threshold=confidence_threshold,
                             quality_assessments=item_quality,
+                            instance_mask=item_result["segmentation"].binary_mask,
                         )
                     else:
                         item_overlay, _ = model_viz(
@@ -206,18 +222,24 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
 
     if short_name == "MLP":
         overlay, report_rows = model_viz(
-            image=result["input_image"],
+            image=result.get("original_image", result["input_image"]),
             features=result["features"],
             predictions=predictions,
             confidence_threshold=confidence_threshold,
             quality_assessments=quality_assessments,
+            original_boxes=result.get("original_bounding_boxes"),
+            instance_mask=result.get(
+                "original_segmentation_mask",
+                result["segmentation"].binary_mask,
+            ),
         )
     else:
         overlay, report_rows = model_viz(
-            result["input_image"],
+            result.get("original_image", result["input_image"]),
             result["features"],
             predictions,
             confidence_threshold,
+            original_boxes=result.get("original_bounding_boxes"),
         )
     for row, track, prediction, quality in zip(
         report_rows,
@@ -318,15 +340,80 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         hide_index=True,
     )
 
+    _render_mlp_output_charts(
+        summary=summary,
+        predictions=predictions,
+        confidence_threshold=confidence_threshold,
+    )
+
     st.subheader("Annotated classification overview")
+    particle_options = [
+        DISPLAY_NAMES.get(str(class_name), str(class_name))
+        for class_name in model_bundle["classes"]
+    ]
+    selected_particles = st.multiselect(
+        "Show particle types",
+        options=particle_options,
+        default=particle_options,
+        key=f"mlp_particle_filter_{st.session_state['input_name']}",
+        help="The filter changes only this visualisation; model predictions remain unchanged.",
+    )
+    selected_indices = [
+        index for index, prediction in enumerate(predictions)
+        if prediction["particle_type"] in selected_particles
+    ]
+    filtered_features = [result["features"][index] for index in selected_indices]
+    filtered_predictions = [predictions[index] for index in selected_indices]
+    filtered_quality = [quality_assessments[index] for index in selected_indices]
+    source_boxes = result.get("original_bounding_boxes")
+    filtered_boxes = (
+        [source_boxes[index] for index in selected_indices]
+        if source_boxes is not None
+        else None
+    )
+    filtered_overlay, filtered_rows = model_viz(
+        image=result.get("original_image", result["input_image"]),
+        features=filtered_features,
+        predictions=filtered_predictions,
+        confidence_threshold=confidence_threshold,
+        quality_assessments=filtered_quality,
+        original_boxes=filtered_boxes,
+        instance_mask=result.get(
+            "original_segmentation_mask",
+            result["segmentation"].binary_mask,
+        ),
+    )
     st.image(
-        context.bgr_to_rgb(overlay),
+        context.bgr_to_rgb(filtered_overlay),
+    )
+    st.caption(
+        f"Showing {len(filtered_rows)} of {len(report_rows)} classified tracks."
     )
     st.markdown(
         "**Legend:** 🟧 Alpha · 🟦 Electron/Positron · 🟩 Proton · "
-        "🟪 V-track · 🟨 Uncertain · Grey dashed: review segmentation"
+        "🟪 V-track · Uncertain predictions retain their class colour · "
+        "Grey dashed: review segmentation"
     )
-    st.dataframe(report_rows, use_container_width=True, hide_index=True)
+    compact_rows = [
+        {
+            "Track": row["Track"],
+            "Particle": row["Particle type"],
+            "Confidence": row["Confidence"],
+            "Decision": row.get("Reporting decision", row["Status"]),
+            "Contour quality": row["Contour quality"],
+        }
+        for row in filtered_rows
+    ]
+    st.dataframe(
+        compact_rows,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Confidence": st.column_config.ProgressColumn(
+                min_value=0.0, max_value=1.0, format="percent"
+            )
+        },
+    )
 
     _render_particle_evidence(
         context,
@@ -377,6 +464,197 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         file_name=f"{safe_name}_{model_key}_report.pdf",
         mime="application/pdf",
     )
+
+
+def _render_mlp_output_charts(
+    summary: dict,
+    predictions: list[dict],
+    confidence_threshold: float,
+) -> None:
+    """Visualise complementary MLP output metrics for the current input.
+
+    These charts describe model output only. They must not be interpreted as
+    accuracy because the uploaded image does not provide ground-truth labels.
+    """
+    st.subheader("MLP output visualisations")
+    st.caption(
+        "These charts summarise the current predictions. Accuracy, precision, "
+        "recall and F1-score must be calculated separately on labelled test data."
+    )
+
+    display_colours = {
+        "Alpha": "#FFA500",
+        "Electron/Positron": "#28C8FF",
+        "Proton": "#00C800",
+        "V-track": "#FF00FF",
+    }
+    class_names = list(summary["class_counts"])
+    class_counts = [summary["class_counts"][name] for name in class_names]
+
+    left, right = st.columns(2)
+    with left:
+        class_figure = go.Figure(
+            go.Pie(
+                labels=class_names,
+                values=class_counts,
+                hole=0.48,
+                marker={"colors": [display_colours[name] for name in class_names]},
+                textinfo="label+value+percent",
+                sort=False,
+            )
+        )
+        class_figure.update_layout(
+            title="Predicted particle composition",
+            margin={"l": 10, "r": 10, "t": 55, "b": 10},
+            legend_title_text="Particle type",
+        )
+        st.plotly_chart(class_figure, use_container_width=True)
+
+    with right:
+        status_figure = go.Figure()
+        status_figure.add_bar(
+            y=["Detected tracks"],
+            x=[summary["confident_classifications"]],
+            name="Reliable candidate",
+            orientation="h",
+            marker_color="#2ECC71",
+            text=[summary["confident_classifications"]],
+            textposition="inside",
+        )
+        status_figure.add_bar(
+            y=["Detected tracks"],
+            x=[summary["uncertain_classifications"]],
+            name="Uncertain",
+            orientation="h",
+            marker_color="#FFD700",
+            text=[summary["uncertain_classifications"]],
+            textposition="inside",
+        )
+        status_figure.update_layout(
+            title=f"Reporting status at {confidence_threshold:.0%} confidence",
+            barmode="stack",
+            xaxis_title="Number of tracks",
+            margin={"l": 10, "r": 10, "t": 55, "b": 10},
+        )
+        st.plotly_chart(status_figure, use_container_width=True)
+
+    track_labels = [f"T{index + 1}" for index in range(len(predictions))]
+    confidences = [float(item["confidence"]) for item in predictions]
+    particle_types = [str(item["particle_type"]) for item in predictions]
+    confidence_colours = [
+        display_colours.get(particle_type, "#A0A0A0")
+        for particle_type in particle_types
+    ]
+    confidence_figure = go.Figure(
+        go.Bar(
+            x=track_labels,
+            y=confidences,
+            marker_color=confidence_colours,
+            customdata=particle_types,
+            text=[f"{value:.0%}" for value in confidences],
+            textposition="outside",
+            hovertemplate=(
+                "Track: %{x}<br>Prediction: %{customdata}<br>"
+                "Confidence: %{y:.1%}<extra></extra>"
+            ),
+        )
+    )
+    confidence_figure.add_hline(
+        y=confidence_threshold,
+        line_dash="dash",
+        line_color="#FF4B4B",
+        annotation_text=f"Reporting threshold ({confidence_threshold:.0%})",
+        annotation_position="top left",
+    )
+    confidence_figure.update_layout(
+        title="Confidence for each detected track",
+        xaxis_title="Track ID",
+        yaxis_title="MLP confidence",
+        yaxis={"range": [0, 1.08], "tickformat": ".0%"},
+        margin={"l": 10, "r": 10, "t": 60, "b": 10},
+        showlegend=False,
+    )
+    st.plotly_chart(confidence_figure, use_container_width=True)
+
+
+def _render_mlp_model_performance(report_path: Path) -> None:
+    """Present labelled final-test performance separately from live predictions."""
+    st.subheader("MLP model performance")
+    if not report_path.exists():
+        st.info("Train the MLP to generate its labelled final-test performance report.")
+        return
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        final_test = report["final_test"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        st.warning(f"The MLP training report cannot be read: {error}")
+        return
+
+    metrics = st.columns(5)
+    metrics[0].metric("Final-test tracks", int(final_test["sample_count"]))
+    metrics[1].metric("Accuracy", f"{float(final_test['accuracy']):.3f}")
+    metrics[2].metric(
+        "Balanced accuracy", f"{float(final_test['balanced_accuracy']):.3f}"
+    )
+    metrics[3].metric("Macro F1", f"{float(final_test['macro_f1']):.3f}")
+    metrics[4].metric("Weighted F1", f"{float(final_test['weighted_f1']):.3f}")
+    st.caption(
+        "Macro F1 is the main result because each particle class contributes "
+        "equally even when the dataset contains unequal class counts."
+    )
+
+    overall_figure = go.Figure(
+        go.Bar(
+            x=["Accuracy", "Balanced accuracy", "Macro F1", "Weighted F1"],
+            y=[
+                float(final_test["accuracy"]),
+                float(final_test["balanced_accuracy"]),
+                float(final_test["macro_f1"]),
+                float(final_test["weighted_f1"]),
+            ],
+            text=[
+                f"{float(final_test[key]):.3f}"
+                for key in ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1")
+            ],
+            textposition="outside",
+            marker_color=["#4C78A8", "#72B7B2", "#F58518", "#54A24B"],
+        )
+    )
+    overall_figure.update_layout(
+        title="Labelled final-test performance",
+        yaxis={"title": "Score", "range": [0, 1.08]},
+        showlegend=False,
+        margin={"l": 10, "r": 10, "t": 55, "b": 10},
+    )
+    st.plotly_chart(overall_figure, use_container_width=True)
+
+    classification = final_test.get("classification_report", {})
+    class_rows = []
+    for class_name in final_test.get("class_names", []):
+        values = classification.get(class_name, {})
+        class_rows.append(
+            {
+                "Particle": DISPLAY_NAMES.get(class_name, class_name),
+                "Precision": float(values.get("precision", 0.0)),
+                "Recall": float(values.get("recall", 0.0)),
+                "F1": float(values.get("f1-score", 0.0)),
+                "Test tracks": int(values.get("support", 0)),
+            }
+        )
+    if class_rows:
+        st.markdown("**Performance by particle class**")
+        st.dataframe(
+            class_rows,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Precision": st.column_config.NumberColumn(format="%.3f"),
+                "Recall": st.column_config.NumberColumn(format="%.3f"),
+                "F1": st.column_config.ProgressColumn(
+                    min_value=0.0, max_value=1.0, format="%.3f"
+                ),
+            },
+        )
 
 
 def _render_particle_evidence(

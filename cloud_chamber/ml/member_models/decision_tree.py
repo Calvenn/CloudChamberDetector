@@ -266,18 +266,8 @@ def load_model(model_path: str | Path) -> dict:
     return bundle
 
 
-# ---------------------------------------------------------------------------
-# Prediction and reporting
-# ---------------------------------------------------------------------------
-
-
 def predict_tracks(model_bundle: dict, features: Iterable[TrackFeatures]) -> list[dict]:
-    """Classify segmented tracks and report probability and inference time.
-
-    Output schema matches cloud_chamber.ml.member_models.mlp.predict_tracks so
-    the Streamlit report page and CSV/PNG export code behave identically
-    across every member model.
-    """
+    """Classify segmented tracks and report probability and inference time."""
     feature_list = list(features)
     matrix = features_to_matrix(feature_list)
     if matrix.shape[0] == 0:
@@ -315,12 +305,7 @@ def build_visual_report(
     predictions: list[dict],
     confidence_threshold: float = 0.60,
 ) -> tuple[np.ndarray, list[dict]]:
-    """Draw classified tracks and build the matching tabular report.
-
-    A probability is model confidence, not proof of particle identity. Values
-    below the chosen reporting threshold retain the most likely class but are
-    visibly marked ``Uncertain`` to avoid overstating the result.
-    """
+    """Draw classified tracks and build the matching tabular report."""
     feature_list = list(features)
     if len(feature_list) != len(predictions):
         raise ValueError("Feature and prediction counts must be equal")
@@ -333,7 +318,6 @@ def build_visual_report(
         uncertain = confidence < confidence_threshold
         colour = CLASS_COLOURS.get(prediction["predicted_class"], (255, 255, 255))
 
-        # The same track ID connects the picture, feature table and CSV row.
         cv2.rectangle(overlay, (x, y), (x + width, y + height), colour, 2)
         status = "Uncertain" if uncertain else "Accepted"
         label = (

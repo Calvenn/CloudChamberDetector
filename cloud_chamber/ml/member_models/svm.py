@@ -25,19 +25,20 @@ FEATURE_COLUMNS = (
     "perimeter_pixels",
     "major_axis_pixels",
     "mean_width_pixels",
-    "orientation_degrees",
     "aspect_ratio",
     "solidity",
     "rectangularity",
     "thickness_pixels",
     "mean_intensity",
+    "line_density",
+    "tortuosity",
 )
 
 CLASS_COLOURS = {
     "alpha": (0, 165, 255),
     "electron_positron": (255, 120, 0),
     "proton": (0, 200, 0),
-    "v_track": (180, 0, 180),
+    "v_track": (255, 0, 255),
 }
 DISPLAY_NAMES = {
     "alpha": "Alpha",
@@ -52,7 +53,20 @@ def features_to_matrix(features: Iterable[TrackFeatures]) -> np.ndarray:
     rows = []
     for track in features:
         values = asdict(track)
-        rows.append([float(values[column]) for column in FEATURE_COLUMNS])
+        area = float(values.get("area_pixels", 0.0))
+        perimeter = float(values.get("perimeter_pixels", 0.0))
+        major_axis = float(values.get("major_axis_pixels", 0.0))
+        mean_intensity = float(values.get("mean_intensity", 0.0))
+
+        line_density = (mean_intensity * area) / major_axis if major_axis > 0 else 0.0
+        tortuosity = perimeter / (2.0 * major_axis) if major_axis > 0 else 1.0
+
+        computed = {
+            **values,
+            "line_density": line_density,
+            "tortuosity": tortuosity,
+        }
+        rows.append([float(computed[column]) for column in FEATURE_COLUMNS])
     return np.asarray(rows, dtype=np.float64).reshape(-1, len(FEATURE_COLUMNS))
 
 
@@ -64,8 +78,12 @@ def load_model(model_path: str | Path):
             f"SVM model not found: {path}. Run scripts/train_svm.py first."
         )
     bundle = joblib.load(path)
-    if tuple(bundle["feature_columns"]) != FEATURE_COLUMNS:
-        raise ValueError("Saved SVM uses a different feature-column contract")
+    saved_cols = tuple(bundle.get("feature_columns", ()))
+    if saved_cols != FEATURE_COLUMNS:
+        raise ValueError(
+            f"Saved SVM uses a different feature-column contract (saved: {len(saved_cols)} cols, active: {len(FEATURE_COLUMNS)} cols). "
+            "Please restart your Streamlit server to reload the updated module."
+        )
     return bundle
 
 
@@ -82,24 +100,38 @@ def predict_tracks(model_bundle: dict, features: Iterable[TrackFeatures]) -> lis
     predictions = model.classes_[np.argmax(probabilities, axis=1)]
     elapsed_per_track = (perf_counter() - started) * 1000.0 / len(matrix)
 
-    return [
-        {
-            "track_id": track.track_id,
-            "predicted_class": str(label),
-            "particle_type": DISPLAY_NAMES.get(str(label), str(label)),
-            "confidence": float(np.max(probability)),
-            "inference_time_ms": elapsed_per_track,
-            "probabilities": {
-                str(class_name): float(class_probability)
-                for class_name, class_probability in zip(
-                    model.classes_, probability, strict=True
-                )
-            },
+    results = []
+    for track, raw_label, prob_row in zip(feature_list, predictions, probabilities, strict=True):
+        class_prob_map = {
+            str(class_name): float(class_probability)
+            for class_name, class_probability in zip(model.classes_, prob_row, strict=True)
         }
-        for track, label, probability in zip(
-            feature_list, predictions, probabilities, strict=True
+        
+        final_label = str(raw_label)
+        final_confidence = float(np.max(prob_row))
+        
+        # Proton Probability Thresholding: Only assign proton if P(proton) > 0.75
+        if final_label == "proton" and final_confidence < 0.75:
+            if "electron_positron" in class_prob_map:
+                final_label = "electron_positron"
+                final_confidence = class_prob_map["electron_positron"]
+            else:
+                sorted_classes = sorted(class_prob_map.items(), key=lambda item: item[1], reverse=True)
+                if len(sorted_classes) > 1:
+                    final_label = sorted_classes[1][0]
+                    final_confidence = sorted_classes[1][1]
+
+        results.append(
+            {
+                "track_id": track.track_id,
+                "predicted_class": final_label,
+                "particle_type": DISPLAY_NAMES.get(final_label, final_label),
+                "confidence": final_confidence,
+                "inference_time_ms": elapsed_per_track,
+                "probabilities": class_prob_map,
+            }
         )
-    ]
+    return results
 
 
 def build_visual_report(

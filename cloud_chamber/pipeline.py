@@ -9,10 +9,8 @@ from typing import Any
 import cv2
 
 from cloud_chamber.acquisition import load_image
-from cloud_chamber.enhancement import enhance_image
-from cloud_chamber.features import TrackFeatures, extract_track_features
+from cloud_chamber.features import TrackFeatures
 from cloud_chamber.models import EnhancementResult, SegmentationResult
-from cloud_chamber.segmentation import segment_tracks
 
 
 @dataclass
@@ -21,6 +19,7 @@ class PipelineResult:
     enhancement: EnhancementResult
     segmentation: SegmentationResult
     features: list[TrackFeatures]
+    spatial_scaling: dict[str, int | float]
 
 
 def analyse_image(
@@ -28,33 +27,18 @@ def analyse_image(
     config: dict[str, Any],
 ) -> PipelineResult:
     sample = load_image(image_path)
-    enhancement = enhance_image(sample.image, config["enhancement"])
-    segmentation_settings = config["segmentation"]
-    profile = segmentation_settings["roi_profiles"]["external_muller"]
-    effective_settings = {
-        **segmentation_settings,
-        **{
-            key: value
-            for key, value in profile.items()
-            if key not in {"left", "right", "top", "bottom"}
-        },
-    }
-    segmentation = segment_tracks(
-        enhancement.enhanced,
-        effective_settings,
-        {side: profile[side] for side in ("left", "right", "top", "bottom")},
-    )
-    features = extract_track_features(
-        segmentation.binary_mask,
-        enhancement.enhanced,
-        minimum_area=float(effective_settings["minimum_object_area"]),
-    )
+    # Local import avoids making the data-contract module initialise the GUI
+    # during ordinary imports while keeping CLI and GUI preprocessing identical.
+    from app import _process_tiled_pipeline_image
+
+    output = _process_tiled_pipeline_image(sample.image, config)
 
     return PipelineResult(
         sample_id=sample.sample_id,
-        enhancement=enhancement,
-        segmentation=segmentation,
-        features=features,
+        enhancement=output["enhancement"],
+        segmentation=output["segmentation"],
+        features=output["features"],
+        spatial_scaling=output["spatial_scaling"],
     )
 
 
