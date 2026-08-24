@@ -76,9 +76,9 @@ segmentation:
   # Small closing kernel preserves 1-2px electron track thinness for proper classification
   closing_kernel: 3
   closing_iterations: 1
-  directional_closing_length: 7
+  directional_closing_length: 3
   # Use 1-pixel collinear alignment lines to bridge track gaps without thickening track width
-  alignment_merge_gap: 180
+  alignment_merge_gap: 30
   alignment_merge_angle: 30
   alignment_merge_minimum_aspect: 1.5
   # Opening is disabled so it cannot erase tracks only 1-2 pixels wide.
@@ -100,8 +100,8 @@ segmentation:
       hysteresis_low_threshold_offset: 6
       hysteresis_seed_pixels: 2
       closing_kernel: 3
-      directional_closing_length: 7
-      alignment_merge_gap: 180
+      directional_closing_length: 3
+      alignment_merge_gap: 30
       alignment_merge_angle: 30
       alignment_merge_minimum_aspect: 1.5
       minimum_object_area: 1000
@@ -123,8 +123,8 @@ segmentation:
       hysteresis_low_threshold_offset: 15
       hysteresis_seed_pixels: 3
       closing_kernel: 3
-      directional_closing_length: 7
-      alignment_merge_gap: 150
+      directional_closing_length: 3
+      alignment_merge_gap: 30
       alignment_merge_angle: 30
       alignment_merge_minimum_aspect: 1.5
       minimum_object_area: 1200
@@ -151,3 +151,5 @@ classification:
   primary_dataset_classes:
     - alpha
     - electron_positron
+    - proton
+    - v_track

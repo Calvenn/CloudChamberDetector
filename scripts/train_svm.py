@@ -16,6 +16,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 from time import perf_counter
+from sklearn.model_selection import ParameterGrid
 
 import joblib
 import numpy as np
@@ -31,14 +32,26 @@ from cloud_chamber.ml.member_models.svm import FEATURE_COLUMNS
 
 SPLITS = ("development", "validation", "final_test")
 
-PARAMETER_CANDIDATES = (
-    {"C": 0.1, "kernel": "linear"},
-    {"C": 1.0, "kernel": "linear"},
-    {"C": 10.0, "kernel": "linear"},
-    {"C": 0.1, "kernel": "rbf"},
-    {"C": 1.0, "kernel": "rbf"},
-    {"C": 10.0, "kernel": "rbf"},
-)
+param_grid = [
+    {
+        "kernel": ["linear"],
+        "C": [0.01, 0.1, 1.0, 10.0, 100.0],
+    },
+    {
+        "kernel": ["rbf"],
+        "C": [0.1, 1.0, 10.0, 100.0, 1000.0],
+        "gamma": ["scale", "auto", 0.001, 0.01, 0.1, 1.0],
+    },
+    {
+        "kernel": ["poly"],
+        "C": [0.1, 1.0, 10.0, 100.0],
+        "degree": [2, 3],
+        "gamma": ["scale", "auto"],
+    },
+]
+
+# Generates a list of dictionaries compatible with your training loop
+PARAMETER_CANDIDATES = list(ParameterGrid(param_grid))
 
 
 def parse_args() -> argparse.Namespace:
@@ -107,56 +120,69 @@ def _features(
             allowed_labels=labels,
             roi_profile_name=roi_profile,
         )
-    return load_feature_csv(cache, labels)
+    raw_matrix, labels_array = load_feature_csv(cache, labels)
+    
+    area = raw_matrix[:, 0]
+    perimeter = raw_matrix[:, 1]
+    major_axis = raw_matrix[:, 2]
+    mean_width = raw_matrix[:, 3]
+    aspect_ratio = raw_matrix[:, 5]
+    solidity = raw_matrix[:, 6]
+    rectangularity = raw_matrix[:, 7]
+    thickness = raw_matrix[:, 8]
+    mean_intensity = raw_matrix[:, 9]
+
+    safe_major = np.where(major_axis > 0, major_axis, 1.0)
+    line_density = np.where(major_axis > 0, (mean_intensity * area) / safe_major, 0.0)
+    tortuosity = np.where(major_axis > 0, perimeter / (2.0 * safe_major), 1.0)
+
+    svm_matrix = np.column_stack([
+        area,
+        perimeter,
+        major_axis,
+        mean_width,
+        aspect_ratio,
+        solidity,
+        rectangularity,
+        thickness,
+        mean_intensity,
+        line_density,
+        tortuosity,
+    ])
+    
+    return svm_matrix, labels_array
 
 
 def make_pipeline(parameters: dict, random_seed: int):
     """Create a scaler and SVM as one indivisible training pipeline."""
     from sklearn.svm import SVC
     from sklearn.pipeline import Pipeline
-    from sklearn.preprocessing import StandardScaler
+    from sklearn.preprocessing import RobustScaler
+    from sklearn.calibration import CalibratedClassifierCV
+
+    svc_kwargs = {
+        "C": parameters["C"],
+        "kernel": parameters["kernel"],
+        "class_weight": {
+            "alpha": 1.0,
+            "electron_positron": 2.5,
+            "proton": 0.6,
+            "v_track": 2.0,
+        },
+        "random_state": random_seed,
+    }
+    if "gamma" in parameters:
+        svc_kwargs["gamma"] = parameters["gamma"]
 
     return Pipeline(
         [
-            ("scaler", StandardScaler()),
+            ("scaler", RobustScaler()),
             (
                 "svm",
-                SVC(
-                    C=parameters["C"],
-                    kernel=parameters["kernel"],
-                    probability=True,
-                    random_state=random_seed,
-                ),
+                CalibratedClassifierCV(SVC(**svc_kwargs), method="isotonic", cv=5),
             ),
         ]
     )
-
-
-def balanced_sample_weights(labels: np.ndarray) -> np.ndarray:
-    """Give each class equal total influence despite class imbalance."""
-    counts = Counter(labels.tolist())
-    sample_count = len(labels)
-    class_count = len(counts)
-    return np.asarray(
-        [sample_count / (class_count * counts[label]) for label in labels],
-        dtype=np.float64,
-    )
-
-
-def fit_with_balancing(model, matrix: np.ndarray, labels: np.ndarray, seed: int):
-    """Use sample weights, with deterministic weighted resampling as fallback."""
-    weights = balanced_sample_weights(labels)
-    try:
-        model.fit(matrix, labels, svm__sample_weight=weights)
-        return "inverse-frequency sample weights"
-    except TypeError:
-        generator = np.random.default_rng(seed)
-        probabilities = weights / weights.sum()
-        indices = generator.choice(
-            len(labels), size=len(labels), replace=True, p=probabilities
-        )
-        model.fit(matrix[indices], labels[indices])
-        return "deterministic class-balanced resampling"
 
 
 def evaluate(model, matrix: np.ndarray, labels: np.ndarray) -> dict:
@@ -236,7 +262,8 @@ def main() -> int:
     best = None
     for index, parameters in enumerate(PARAMETER_CANDIDATES, start=1):
         model = make_pipeline(parameters, seed)
-        balancing = fit_with_balancing(model, development_x, development_y, seed)
+        model.fit(development_x, development_y)
+        balancing = "class_weight='balanced'"
         metrics = evaluate(model, validation_x, validation_y)
         record = {
             "candidate": index,
@@ -256,15 +283,23 @@ def main() -> int:
             best = (score, parameters, model, balancing, index)
 
     assert best is not None
-    _, best_parameters, best_model, balancing, best_index = best
+    _, best_parameters, _, balancing, best_index = best
+    
+    # Refit on combined (Development + Validation) data
+    train_x = np.concatenate((development_x, validation_x), axis=0)
+    train_y = np.concatenate((development_y, validation_y), axis=0)
+    
+    final_model = make_pipeline(best_parameters, seed)
+    final_model.fit(train_x, train_y)
+    
     final_x, final_y = split_tables["final_test"]
-    final_metrics = evaluate(best_model, final_x, final_y)
+    final_metrics = evaluate(final_model, final_x, final_y)
     selected_validation = candidates[best_index - 1]["validation"]
 
     bundle = {
-        "model": best_model,
+        "model": final_model,
         "feature_columns": FEATURE_COLUMNS,
-        "classes": tuple(str(value) for value in best_model.classes_),
+        "classes": tuple(str(value) for value in final_model.classes_),
         "selected_parameters": best_parameters,
         "random_seed": seed,
         "balancing": balancing,
@@ -275,7 +310,7 @@ def main() -> int:
     joblib.dump(bundle, args.output)
 
     report = {
-        "method": "StandardScaler + SVC",
+        "method": "RobustScaler + SVC (with Dev+Val Retraining)",
         "feature_source": (
             "combined primary and external automatic segmentation contours "
             "labelled by COCO-mask overlap"
