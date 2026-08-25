@@ -96,7 +96,9 @@ def _build_page_handlers():
         "SVM": lambda _config: svm_page.render(context),
         "Decision Tree": lambda _config: decision_tree_page.render(context),
         "MLP": lambda config: mlp_page.render(config, context),
-        "Extremely Randomized Trees": lambda _config: extra_trees_page.render(context),
+        "Extremely Randomized Trees": lambda config: extra_trees_page.render(
+            config, context
+        ),
         COMPARISON_PAGE: lambda _config: render_comparison_page(),
     }
 
