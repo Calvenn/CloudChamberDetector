@@ -63,14 +63,6 @@ def _create_gallery_item(track, prediction, quality, image, analysis_image, conf
     }
 
 
-def _displayable_detections(features, predictions, quality_assessments):
-    """Return aligned contour, prediction, and quality records."""
-    if not (len(features) == len(predictions) == len(quality_assessments)):
-        raise ValueError("Decision Tree features, predictions, and quality must align")
-
-    return list(zip(features, predictions, quality_assessments))
-
-
 def _build_gallery_montage(gallery_items, cols=5, thumb_size=100, gap=10):
     """Build a single PNG montage from particle gallery thumbnails."""
     if not gallery_items:
@@ -134,9 +126,10 @@ def render(context: PageContext) -> None:
         value=st.session_state.get("decision_tree_confidence_threshold", 0.60),
         step=0.05,
         key="decision_tree_confidence_threshold_top",
-        help="Only predictions at or above this value appear in the image and gallery.",
+        help="Predictions below this value are treated as uncertain for the report and gallery status.",
     )
     st.session_state["decision_tree_confidence_threshold"] = confidence_threshold
+    confidence_threshold = st.session_state["decision_tree_confidence_threshold"]
     
     # Batch processing button
     col1, col2 = st.columns([3, 1])
@@ -157,7 +150,7 @@ def render(context: PageContext) -> None:
                 try:
                     from cloud_chamber.config import load_config
                     config = load_config()
-                except Exception:
+                except:
                     config = {}
             
             for index, sample in enumerate(samples):
@@ -194,13 +187,13 @@ def render(context: PageContext) -> None:
             
             progress.empty()
             st.session_state["decision_tree_batch_results"] = batch_results
-
+    
     # Display batch results if available
     batch_results = st.session_state.get("decision_tree_batch_results", {})
     if not batch_results:
         st.info("No batch results. Process images first using the Classify button.")
         return
-
+    
     # ===== SECTION 1: SEARCH & FILTER =====
     st.divider()
     st.subheader("1. Search & Filter Images")
@@ -332,14 +325,6 @@ def render(context: PageContext) -> None:
     result = selected_entry["result"]
     predictions = selected_entry["predictions"]
     quality_assessments = selected_entry["quality"]
-    displayed_detections = _displayable_detections(
-        result["features"],
-        predictions,
-        quality_assessments,
-    )
-    displayed_features = [track for track, _, _ in displayed_detections]
-    displayed_predictions = [prediction for _, prediction, _ in displayed_detections]
-    displayed_quality = [quality for _, _, quality in displayed_detections]
     
     # ===== SECTION 3: DISPLAY FULL SCANNED IMAGE =====
     st.divider()
@@ -347,15 +332,15 @@ def render(context: PageContext) -> None:
     
     overlay, _ = decision_tree_build_visual_report(
         result["input_image"],
-        displayed_features,
-        displayed_predictions,
+        result["features"],
+        predictions,
         confidence_threshold,
     )
     
     st.image(context.bgr_to_rgb(overlay))
     st.caption(
-        f"Showing {len(displayed_predictions)} detected contours. Annotation colours "
-        "identify the predicted particle type."
+        "Decision Tree particle predictions. Yellow annotations are predictions "
+        f"below the selected confidence threshold ({confidence_threshold:.0%})."
     )
     
     # ===== SECTION 4: IMAGE-LEVEL DETAILS =====
@@ -363,11 +348,11 @@ def render(context: PageContext) -> None:
     st.subheader("4. Image Analysis Details")
     
     processing_time_ms = float(result["segmentation"].processing_time_ms) + sum(
-        float(item["inference_time_ms"]) for item in displayed_predictions
+        float(item["inference_time_ms"]) for item in predictions
     )
     summary = build_summary(
-        predictions=displayed_predictions,
-        quality_assessments=displayed_quality,
+        predictions=predictions,
+        quality_assessments=quality_assessments,
         confidence_threshold=confidence_threshold,
         processing_time_ms=processing_time_ms,
     )
@@ -407,7 +392,7 @@ def render(context: PageContext) -> None:
     
     # Create gallery items
     gallery_items = []
-    for track, prediction, quality in displayed_detections:
+    for track, prediction, quality in zip(result["features"], predictions, quality_assessments):
         item = _create_gallery_item(
             track, prediction, quality, 
             st.session_state["input_image"],

@@ -273,8 +273,8 @@ def render_cnn_page(config: dict, context: PageContext) -> None:
     st.subheader("Annotated classification overview")
     st.image(context.bgr_to_rgb(overlay))
     st.markdown(
-        "**Legend:** 🟩 Alpha · 🟦 Electron/Positron · 🟥 Proton · "
-        "🟪 V-track · 🟨 Uncertain"
+        "**Legend:** 🟧 Alpha · 🟦 Electron/Positron · 🟩 Proton · "
+        "🟨 Uncertain"
     )
     st.dataframe(report_rows, use_container_width=True, hide_index=True)
 

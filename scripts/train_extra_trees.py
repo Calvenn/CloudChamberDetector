@@ -127,9 +127,7 @@ def main() -> int:
         "segmented_final_test_metrics": segmented_final,
         "training_representation": "ground truth + merged segmented augmentation",
     }
-    # Compression keeps the ensemble below GitHub's 100 MB per-file limit
-    # without changing its fitted trees or predictions.
-    joblib.dump(bundle, output, compress=3)
+    joblib.dump(bundle, output)
     report = {
         "method": "Hybrid ExtraTreesClassifier",
         "selection_metric": "validation macro F1; balanced accuracy and accuracy tie-breakers",
