@@ -26,6 +26,7 @@ from cloud_chamber.ml.member_models.decision_tree import (
     train_candidates,
 )
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS as SHARED_FEATURE_COLUMNS
+from cloud_chamber.ml.shared_features import DEFAULT_FEATURE_DIR, ensure_shared_features
 
 SPLITS = ("development", "validation", "final_test")
 
@@ -46,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--feature-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "features" / "mlp" / "muller",
+        default=DEFAULT_FEATURE_DIR,
         help="Canonical shared ground-truth and production-segmented feature tables.",
     )
     parser.add_argument(
@@ -131,7 +132,14 @@ def main() -> int:
     config = load_config(args.config)
     seed = int(config["project"]["random_seed"])
     allowed = set(config["classification"]["supported_classes"])
-    args.feature_dir.mkdir(parents=True, exist_ok=True)
+    ensure_shared_features(
+        config=config,
+        external_split_root=args.split_root,
+        primary_split_root=args.primary_split_root,
+        feature_dir=args.feature_dir,
+        allowed_labels=allowed,
+        rebuild=args.rebuild_features,
+    )
     tables = {}
     hybrid_tables = {}
     counts = {}

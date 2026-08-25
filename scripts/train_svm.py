@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from cloud_chamber.config import load_config
 from cloud_chamber.ml.contour_dataset import build_segmented_feature_csv, load_feature_csv
 from cloud_chamber.ml.member_models.svm import FEATURE_COLUMNS
+from cloud_chamber.ml.shared_features import DEFAULT_FEATURE_DIR, ensure_shared_features
 
 
 SPLITS = ("development", "validation", "final_test")
@@ -70,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--feature-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "features" / "mlp" / "muller",
+        default=DEFAULT_FEATURE_DIR,
         help="Canonical shared ground-truth and production-segmented feature tables.",
     )
     parser.add_argument(
@@ -242,7 +243,14 @@ def main() -> int:
     config = load_config(args.config)
     seed = int(config["project"]["random_seed"])
     allowed_labels = set(config["classification"]["supported_classes"])
-    args.feature_dir.mkdir(parents=True, exist_ok=True)
+    ensure_shared_features(
+        config=config,
+        external_split_root=args.split_root,
+        primary_split_root=args.primary_split_root,
+        feature_dir=args.feature_dir,
+        allowed_labels=allowed_labels,
+        rebuild=args.rebuild_features,
+    )
 
     split_tables = {}
     hybrid_tables = {}

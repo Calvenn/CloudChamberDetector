@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from cloud_chamber.config import load_config
 from cloud_chamber.ml.contour_dataset import load_feature_csv
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
+from cloud_chamber.ml.shared_features import DEFAULT_FEATURE_DIR, ensure_shared_features
 
 
 def _load_pair(root: Path, split: str, allowed: set[str], ground_truth: bool):
@@ -84,7 +85,13 @@ def main() -> int:
     config = load_config(PROJECT_ROOT / "config.yaml")
     seed = int(config["project"]["random_seed"])
     allowed = set(config["classification"]["supported_classes"])
-    root = PROJECT_ROOT / "data" / "features" / "mlp" / "muller"
+    root = ensure_shared_features(
+        config=config,
+        external_split_root=PROJECT_ROOT / "dataset" / "external_dataset_split",
+        primary_split_root=PROJECT_ROOT / "dataset" / "primary_dataset_split",
+        feature_dir=DEFAULT_FEATURE_DIR,
+        allowed_labels=allowed,
+    )
 
     gt = {split: _load_pair(root, split, allowed, True) for split in ("development", "validation", "final_test")}
     segmented = {split: _load_pair(root, split, allowed, False) for split in ("development", "validation", "final_test")}
@@ -115,7 +122,7 @@ def main() -> int:
 
     standardised_final = _metrics(model, *gt["final_test"])
     segmented_final = _metrics(model, *segmented["final_test"])
-    output = PROJECT_ROOT / "models" / "extra_trees_hybrid_candidate.joblib"
+    output = PROJECT_ROOT / "models" / "extra_trees_classifier.joblib"
     bundle = {
         "model": model,
         "feature_columns": FEATURE_COLUMNS,
@@ -129,7 +136,7 @@ def main() -> int:
     }
     joblib.dump(bundle, output)
     report = {
-        "method": "Hybrid ExtraTreesClassifier",
+        "method": "ExtraTreesClassifier",
         "selection_metric": "validation macro F1; balanced accuracy and accuracy tie-breakers",
         "feature_columns": FEATURE_COLUMNS,
         "training_class_counts": dict(sorted(Counter(refit_y.tolist()).items())),
@@ -148,7 +155,7 @@ def main() -> int:
         "segmented_final_test": segmented_final,
         "model_path": str(output),
     }
-    report_path = PROJECT_ROOT / "models" / "extra_trees_hybrid_training_report.json"
+    report_path = PROJECT_ROOT / "models" / "extra_trees_training_report.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Saved candidate: {output}")
     print(f"Saved report: {report_path}")

@@ -336,6 +336,14 @@ is selected.
 
     features = result["features"]
 
+    feature_signature = (
+        st.session_state.get("input_name"),
+        tuple(
+            (int(track.track_id), tuple(int(value) for value in track.bounding_box))
+            for track in features
+        ),
+    )
+
 
     if not features:
 
@@ -370,11 +378,29 @@ is selected.
         st.session_state[
             "extra_trees_predictions"
         ] = predictions
+        st.session_state[
+            "extra_trees_prediction_signature"
+        ] = feature_signature
 
 
     predictions = st.session_state.get(
         "extra_trees_predictions"
     )
+
+    prediction_signature = st.session_state.get(
+        "extra_trees_prediction_signature"
+    )
+    if predictions is not None and (
+        prediction_signature != feature_signature
+        or len(predictions) != len(features)
+    ):
+        st.session_state["extra_trees_predictions"] = None
+        st.session_state["extra_trees_prediction_signature"] = None
+        predictions = None
+        st.info(
+            "The image or segmentation tracks changed. Click "
+            "**Classify Tracks** to refresh the Extra Trees predictions."
+        )
 
 
     if predictions is None:

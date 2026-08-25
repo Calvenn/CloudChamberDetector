@@ -115,6 +115,7 @@ def _initialise_state() -> None:
     st.session_state.setdefault("cnn_predictions", None)
     st.session_state.setdefault("svm_predictions", None)
     st.session_state.setdefault("extra_trees_predictions", None)
+    st.session_state.setdefault("extra_trees_prediction_signature", None)
     st.session_state.setdefault("decision_tree_predictions", None)
     st.session_state.setdefault(
         "layout_choice", "Auto-detect from image shape (recommended)"
@@ -201,6 +202,7 @@ def _shared_pipeline_page(config: dict) -> None:
     st.session_state["svm_predictions"] = None
     st.session_state["svm_quality"] = None
     st.session_state["extra_trees_predictions"] = None
+    st.session_state["extra_trees_prediction_signature"] = None
     # Batch classifier pages cache their own pipeline outputs. Clear them as
     # well, otherwise they can display contours from an older segmentation run.
     st.session_state["mlp_batch_results"] = {}
@@ -1614,6 +1616,7 @@ def _set_input(image: np.ndarray, name: str, description: str) -> None:
     st.session_state["decision_tree_predictions"] = None
     st.session_state["decision_tree_quality"] = None
     st.session_state["extra_trees_predictions"] = None
+    st.session_state["extra_trees_prediction_signature"] = None
 
 
 

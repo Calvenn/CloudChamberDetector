@@ -145,7 +145,9 @@ The command saves:
 - `models/mlp_classifier.joblib`: fitted StandardScaler and MLP classifier.
 - `models/mlp_training_report.json`: class counts, every candidate parameter
   result, selected candidate, confusion matrix and final-test metrics.
-- `data/features/muller/*.csv`: reproducible labelled contour features.
+- `data/features/shared/muller/*.csv`: shared reproducible contour features
+  used by MLP, SVM, Decision Tree and Extra Trees. Missing files can be built
+  independently with `python scripts/build_shared_features.py`.
 
 Use `python scripts/train_mlp.py --rebuild-features` only after changing the
 shared feature extraction. In the GUI, process an input on **Shared Processing
