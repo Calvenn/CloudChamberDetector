@@ -264,6 +264,14 @@ def encode_pdf_report(
         f"({summary['mean_contour_quality']:.1f}/100)",
         f"Class counts: {summary['class_counts']}",
     ]
+    if metadata.get("model_name") == "Extremely Randomized Trees":
+        lines[4:4] = [
+            f"Model name: {metadata['model_name']}",
+            f"Model version: {metadata.get('model_version', 'not recorded')}",
+            f"Configuration: {metadata.get('model_configuration', 'not recorded')}",
+            f"Random seed: {metadata.get('random_seed', 'not recorded')}",
+            f"Confidence threshold: {metadata.get('confidence_threshold', 0):.0%}",
+        ]
     calibration = metadata.get("calibration", {})
     if calibration.get("enabled"):
         lines.extend(
@@ -336,6 +344,163 @@ def encode_pdf_report(
                 draw.text((margin + 20, y), line, fill="black", font=font)
                 y += 17
             y += 12
+        pages.append(page)
+
+    output = io.BytesIO()
+    pages[0].save(
+        output,
+        format="PDF",
+        save_all=True,
+        append_images=pages[1:],
+        resolution=150.0,
+    )
+    return output.getvalue()
+
+
+def _report_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    """Load a readable report font with portable fallbacks."""
+    candidates = (
+        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    )
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def encode_batch_pdf_report(
+    entries: list[dict[str, Any]],
+    metadata: dict[str, Any],
+) -> bytes:
+    """Create a readable batch/video report with one annotated input per page."""
+    page_size = (1240, 1754)
+    margin = 70
+    title_font = _report_font(34, bold=True)
+    heading_font = _report_font(25, bold=True)
+    body_font = _report_font(18)
+    bold_font = _report_font(18, bold=True)
+    small_font = _report_font(15)
+    pages: list[Image.Image] = []
+    class_names = ("Alpha", "Electron/Positron", "Proton", "V-track")
+    aggregate_counts = Counter(
+        prediction["particle_type"]
+        for entry in entries
+        for prediction in entry.get("predictions", [])
+    )
+    total_tracks = sum(aggregate_counts.values())
+    threshold = float(metadata.get("confidence_threshold", 0.60))
+    uncertain_tracks = sum(
+        float(prediction["confidence"]) < threshold
+        for entry in entries
+        for prediction in entry.get("predictions", [])
+    )
+
+    cover = Image.new("RGB", page_size, "white")
+    draw = ImageDraw.Draw(cover)
+    draw.text(
+        (margin, margin),
+        "Extremely Randomized Trees Research Report",
+        fill="#152238",
+        font=title_font,
+    )
+    draw.text(
+        (margin, margin + 52),
+        "Batch and video-frame classification summary",
+        fill="#4B5563",
+        font=heading_font,
+    )
+    y = margin + 125
+    cover_lines = [
+        ("Generated", metadata.get("generated_at", "Not recorded")),
+        ("Input type", metadata.get("input_type", "Batch images")),
+        ("Inputs analysed", str(len(entries))),
+        ("Detected tracks", str(total_tracks)),
+        ("Accepted tracks", str(total_tracks - uncertain_tracks)),
+        ("Tracks requiring review", str(uncertain_tracks)),
+        ("Confidence threshold", f"{threshold:.0%}"),
+        ("Model version", str(metadata.get("model_version", "Not recorded"))),
+        ("Model configuration", str(metadata.get("model_configuration", "Not recorded"))),
+    ]
+    for label, value in cover_lines:
+        draw.text((margin, y), f"{label}:", fill="#111827", font=bold_font)
+        for line_index, line in enumerate(textwrap.wrap(str(value), width=85) or [""]):
+            draw.text(
+                (margin + 250, y + line_index * 24),
+                line,
+                fill="#111827",
+                font=body_font,
+            )
+        y += max(34, 24 * len(textwrap.wrap(str(value), width=85) or [""]))
+    y += 25
+    draw.text((margin, y), "Aggregate particle counts", fill="#152238", font=heading_font)
+    y += 42
+    for class_name in class_names:
+        draw.text(
+            (margin + 25, y),
+            f"{class_name}: {aggregate_counts.get(class_name, 0)}",
+            fill="#111827",
+            font=body_font,
+        )
+        y += 31
+    draw.text(
+        (margin, page_size[1] - margin - 25),
+        f"Page 1 of {len(entries) + 1}",
+        fill="#6B7280",
+        font=small_font,
+    )
+    pages.append(cover)
+
+    for page_index, entry in enumerate(entries, start=2):
+        page = Image.new("RGB", page_size, "white")
+        draw = ImageDraw.Draw(page)
+        draw.text(
+            (margin, margin),
+            f"Input {page_index - 1}: {entry['name']}",
+            fill="#152238",
+            font=heading_font,
+        )
+        y = margin + 42
+        for line in textwrap.wrap(str(entry.get("source", "")), width=105) or [""]:
+            draw.text((margin, y), line, fill="#4B5563", font=small_font)
+            y += 21
+        predictions = entry.get("predictions", [])
+        counts = Counter(item["particle_type"] for item in predictions)
+        uncertain = sum(float(item["confidence"]) < threshold for item in predictions)
+        summary_text = (
+            f"Tracks: {len(predictions)}   Accepted: {len(predictions) - uncertain}   "
+            f"Review: {uncertain}   Processing: {float(entry.get('processing_time_ms', 0)):.1f} ms"
+        )
+        draw.text((margin, y + 8), summary_text, fill="#111827", font=bold_font)
+        y += 43
+        counts_text = "   ".join(
+            f"{name}: {counts.get(name, 0)}" for name in class_names
+        )
+        draw.text((margin, y), counts_text, fill="#111827", font=small_font)
+        y += 35
+
+        overlay_rgb = cv2.cvtColor(entry["overlay"], cv2.COLOR_BGR2RGB)
+        overlay = Image.fromarray(overlay_rgb)
+        maximum_width = page_size[0] - 2 * margin
+        maximum_height = page_size[1] - y - margin - 55
+        overlay.thumbnail((maximum_width, maximum_height), Image.Resampling.LANCZOS)
+        image_x = (page_size[0] - overlay.width) // 2
+        page.paste(overlay, (image_x, y))
+        draw.rectangle(
+            (image_x, y, image_x + overlay.width, y + overlay.height),
+            outline="#CBD5E1",
+            width=2,
+        )
+        draw.text(
+            (margin, page_size[1] - margin - 25),
+            f"Page {page_index} of {len(entries) + 1}",
+            fill="#6B7280",
+            font=small_font,
+        )
         pages.append(page)
 
     output = io.BytesIO()

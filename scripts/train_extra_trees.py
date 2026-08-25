@@ -1,4 +1,4 @@
-"""Train an Extra Trees candidate on ground-truth + segmented features."""
+"""Train Extremely Randomized Trees on ground-truth + segmented features."""
 
 from __future__ import annotations
 

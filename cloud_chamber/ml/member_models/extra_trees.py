@@ -1,4 +1,4 @@
-"""Extra Trees inference and reporting for segmented particle tracks."""
+"""Extremely Randomized Trees inference and reporting for particle tracks."""
 
 from __future__ import annotations
 
@@ -39,16 +39,18 @@ def features_to_matrix(features: Iterable[TrackFeatures]) -> np.ndarray:
 
 
 def load_model(model_path: str | Path) -> dict:
-    """Load and validate the saved Extra Trees model bundle."""
+    """Load and validate the saved Extremely Randomized Trees model bundle."""
     path = Path(model_path)
     if not path.is_file():
         raise FileNotFoundError(
-            f"Extra Trees model not found: {path}. "
+            f"Extremely Randomized Trees model not found: {path}. "
             "Run scripts/train_extra_trees.py first."
         )
     bundle = joblib.load(path)
     if tuple(bundle["feature_columns"]) != FEATURE_COLUMNS:
-        raise ValueError("Saved Extra Trees model uses different feature columns")
+        raise ValueError(
+            "Saved Extremely Randomized Trees model uses different feature columns"
+        )
     return bundle
 
 
@@ -155,12 +157,15 @@ def summarise_predictions(
     predictions: list[dict],
     confidence_threshold: float = 0.60,
 ) -> dict:
-    """Summarise Extra Trees prediction results."""
+    """Summarise Extremely Randomized Trees prediction results."""
 
-    # Keep a stable schema even when the current image contains no prediction
-    # for one or more trained classes. UI and exported reports can therefore
-    # display a zero instead of failing on an absent dictionary key.
-    summary = {display_name: 0 for display_name in DISPLAY_NAMES.values()}
+    # Always expose every supported class. A valid image can contain zero
+    # predictions for a class, and the UI must display 0 instead of raising a
+    # KeyError for a missing summary key.
+    summary = {
+        display_name: 0
+        for display_name in DISPLAY_NAMES.values()
+    }
     summary.update({"Uncertain": 0, "Total": len(predictions)})
 
     for prediction in predictions:
@@ -181,6 +186,8 @@ def build_visual_report(
     predictions: list[dict],
     confidence_threshold: float = 0.60,
     quality_assessments: list[dict] | None = None,
+    original_boxes: list[dict] | None = None,
+    instance_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, list[dict]]:
     """Draw the class predicted for every accepted segmented contour."""
     feature_list = list(features)
@@ -191,9 +198,25 @@ def build_visual_report(
     }
 
     overlay = image.copy()
+    component_labels = None
+    component_stats = None
+    used_components: set[int] = set()
+    if instance_mask is not None:
+        if instance_mask.shape != image.shape[:2]:
+            raise ValueError("Instance mask and report image must have equal size")
+        _, component_labels, component_stats, _ = cv2.connectedComponentsWithStats(
+            (instance_mask > 0).astype(np.uint8), connectivity=8
+        )
     rows = []
-    for track, prediction in zip(feature_list, predictions, strict=True):
-        x, y, width, height = track.bounding_box
+    for index, (track, prediction) in enumerate(
+        zip(feature_list, predictions, strict=True)
+    ):
+        if original_boxes and index < len(original_boxes):
+            box = original_boxes[index]
+            x, y = int(round(box["x"])), int(round(box["y"]))
+            width, height = int(round(box["width"])), int(round(box["height"]))
+        else:
+            x, y, width, height = track.bounding_box
         confidence = float(prediction["confidence"])
         uncertain = confidence < confidence_threshold
         quality = quality_by_track.get(track.track_id)
@@ -207,7 +230,27 @@ def build_visual_report(
                 prediction["predicted_class"], (255, 255, 255)
             )
 
-        if low_quality:
+        component_id = _match_component_to_box(
+            component_stats,
+            (x, y, width, height),
+            used_components,
+        )
+        if component_id is not None and component_labels is not None:
+            used_components.add(component_id)
+            region = component_labels == component_id
+            colour_array = np.asarray(colour, dtype=np.float32)
+            overlay[region] = np.clip(
+                overlay[region].astype(np.float32) * 0.48
+                + colour_array * 0.52,
+                0,
+                255,
+            ).astype(np.uint8)
+            region_mask = region.astype(np.uint8) * 255
+            outlines, _ = cv2.findContours(
+                region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            cv2.drawContours(overlay, outlines, -1, colour, 2, cv2.LINE_AA)
+        elif low_quality:
             _draw_dashed_rectangle(
                 overlay, (x, y), (x + width, y + height), colour
             )
@@ -267,6 +310,32 @@ def build_visual_report(
     return overlay, rows
 
 
+def _match_component_to_box(
+    stats: np.ndarray | None,
+    box: tuple[int, int, int, int],
+    used_components: set[int],
+) -> int | None:
+    """Match a reported box to the unused mask component with greatest IoU."""
+    if stats is None or len(stats) <= 1:
+        return None
+    x, y, width, height = box
+    best_id = None
+    best_iou = 0.0
+    for component_id in range(1, len(stats)):
+        if component_id in used_components:
+            continue
+        cx, cy, cw, ch, _ = (int(value) for value in stats[component_id])
+        intersection_width = max(0, min(x + width, cx + cw) - max(x, cx))
+        intersection_height = max(0, min(y + height, cy + ch) - max(y, cy))
+        intersection = intersection_width * intersection_height
+        union = width * height + cw * ch - intersection
+        iou = intersection / union if union > 0 else 0.0
+        if iou > best_iou:
+            best_iou = iou
+            best_id = component_id
+    return best_id if best_iou > 0 else None
+
+
 def _draw_dashed_rectangle(
     image: np.ndarray,
     top_left: tuple[int, int],
@@ -289,27 +358,21 @@ def encode_report_png(overlay: np.ndarray) -> bytes:
     """Encode an annotated classification report as PNG."""
     success, encoded = cv2.imencode(".png", overlay)
     if not success:
-        raise OSError("Unable to encode the Extra Trees visual report")
+        raise OSError(
+            "Unable to encode the Extremely Randomized Trees visual report"
+        )
     return encoded.tobytes()
 
 
 def encode_report_csv(rows: list[dict]) -> bytes:
-    """Encode full technical results with clear, analysis-friendly headings."""
+    """Encode concise, decision-useful classification results."""
     if not rows:
         return b""
     preferred_columns = (
         "Track",
         "Particle type",
         "Confidence",
-        "Reporting decision",
         "Status",
-        "Contour quality",
-        "Contour quality score",
-        "Local contrast",
-        "X",
-        "Y",
-        "Width",
-        "Height",
         "Inference time (ms)",
         "Top decision driver",
     )
@@ -317,21 +380,13 @@ def encode_report_csv(rows: list[dict]) -> bytes:
         "Track": "Track ID",
         "Particle type": "Predicted Particle Type",
         "Confidence": "Confidence (0-1)",
-        "Reporting decision": "Reporting Decision",
-        "Status": "Box Display Status",
-        "Contour quality": "Contour Quality Grade",
-        "Contour quality score": "Contour Quality Score (0-100)",
-        "Local contrast": "Local Contrast",
-        "X": "Bounding Box X (px)",
-        "Y": "Bounding Box Y (px)",
-        "Width": "Bounding Box Width (px)",
-        "Height": "Bounding Box Height (px)",
+        "Status": "Review Status",
         "Inference time (ms)": "Inference Time (ms)",
         "Top decision driver": "Top Decision Drivers",
     }
     source_columns = list(rows[0])
     ordered_columns = [name for name in preferred_columns if name in source_columns]
-    ordered_columns.extend(name for name in source_columns if name not in ordered_columns)
+    ordered_columns.extend(name for name in source_columns if name.startswith("P("))
     fieldnames = [column_names.get(name, name) for name in ordered_columns]
     export_rows = [
         {

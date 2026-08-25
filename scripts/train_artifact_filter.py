@@ -187,7 +187,7 @@ def main() -> int:
     output = PROJECT_ROOT / "models" / model_name
     joblib.dump(bundle, output, compress=3)
     report = {
-        "method": "Extra Trees particle-versus-artifact candidate filter",
+        "method": "Extremely Randomized Trees particle-versus-artifact candidate filter",
         "domain": args.domain,
         "selected_candidate": best_index,
         "selected_parameters": parameters,

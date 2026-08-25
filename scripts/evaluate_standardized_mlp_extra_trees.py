@@ -1,4 +1,4 @@
-"""Fair classifier-only comparison of MLP and Extra Trees.
+"""Fair classifier-only comparison of MLP and Extremely Randomized Trees.
 
 Both models receive the identical final-test particles, measured from one COCO
 ground-truth instance mask per annotation. This isolates classification from
@@ -111,7 +111,7 @@ def main() -> int:
 
     bundles = {
         "MLP": load_mlp(PROJECT_ROOT / "models" / "mlp_classifier.joblib"),
-        "Extra Trees": load_extra_trees(PROJECT_ROOT / "models" / "extra_trees_classifier.joblib"),
+        "Extremely Randomized Trees": load_extra_trees(PROJECT_ROOT / "models" / "extra_trees_classifier.joblib"),
     }
     results = {}
     predictions_by_model = {}
@@ -143,7 +143,9 @@ def main() -> int:
                     "annotation_id": row["annotation_id"],
                     "actual": row["label"],
                     "mlp_prediction": predictions_by_model["MLP"][index],
-                    "extra_trees_prediction": predictions_by_model["Extra Trees"][index],
+                    "extra_trees_prediction": predictions_by_model[
+                        "Extremely Randomized Trees"
+                    ][index],
                 }
             )
 
