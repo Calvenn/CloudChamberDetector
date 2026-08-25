@@ -157,12 +157,10 @@ def summarise_predictions(
 ) -> dict:
     """Summarise Extra Trees prediction results."""
 
-    summary = {
-        DISPLAY_NAMES.get(class_name, class_name): 0
-        for class_name in dict.fromkeys(
-            prediction["predicted_class"] for prediction in predictions
-        )
-    }
+    # Keep a stable schema even when the current image contains no prediction
+    # for one or more trained classes. UI and exported reports can therefore
+    # display a zero instead of failing on an absent dictionary key.
+    summary = {display_name: 0 for display_name in DISPLAY_NAMES.values()}
     summary.update({"Uncertain": 0, "Total": len(predictions)})
 
     for prediction in predictions:

@@ -428,7 +428,7 @@ is selected.
     # Particle counts
     # -----------------------------------------------------
 
-    count_columns = st.columns(4)
+    count_columns = st.columns(5)
 
 
     count_columns[0].metric(
@@ -450,6 +450,12 @@ is selected.
 
 
     count_columns[3].metric(
+        "V-track",
+        summary["V-track"],
+    )
+
+
+    count_columns[4].metric(
         "Uncertain",
         summary["Uncertain"],
     )

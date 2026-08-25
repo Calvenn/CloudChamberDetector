@@ -70,7 +70,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--feature-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "features" / "muller",
+        default=PROJECT_ROOT / "data" / "features" / "mlp" / "muller",
+        help="Canonical shared ground-truth and production-segmented feature tables.",
     )
     parser.add_argument(
         "--output", type=Path, default=PROJECT_ROOT / "models" / "svm_classifier.joblib"
@@ -121,7 +122,11 @@ def _features(
             roi_profile_name=roi_profile,
         )
     raw_matrix, labels_array = load_feature_csv(cache, labels)
-    
+    return _svm_matrix(raw_matrix), labels_array
+
+
+def _svm_matrix(raw_matrix: np.ndarray) -> np.ndarray:
+    """Derive the SVM's 11 columns from the shared 16-feature contract."""
     area = raw_matrix[:, 0]
     perimeter = raw_matrix[:, 1]
     major_axis = raw_matrix[:, 2]
@@ -150,7 +155,24 @@ def _features(
         tortuosity,
     ])
     
-    return svm_matrix, labels_array
+    return svm_matrix
+
+
+def _load_pair(
+    root: Path, split: str, labels: set[str], ground_truth: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    paths = (
+        (
+            root / "ground_truth" / f"external_{split}.csv",
+            root / "ground_truth" / f"primary_{split}.csv",
+        )
+        if ground_truth
+        else (root / f"{split}.csv", root / f"primary_{split}.csv")
+    )
+    tables = [load_feature_csv(path, labels) for path in paths]
+    raw = np.concatenate([item[0] for item in tables], axis=0)
+    target = np.concatenate([item[1] for item in tables], axis=0)
+    return _svm_matrix(raw), target
 
 
 def make_pipeline(parameters: dict, random_seed: int):
@@ -222,41 +244,32 @@ def main() -> int:
     allowed_labels = set(config["classification"]["supported_classes"])
     args.feature_dir.mkdir(parents=True, exist_ok=True)
 
-    primary_source = args.primary_split_root / "annotations_coco.json"
-
     split_tables = {}
+    hybrid_tables = {}
     class_counts = {}
     for split in SPLITS:
-        external_x, external_y = _features(
-            args.split_root / split / "annotations_coco.json",
-            args.feature_dir / f"{split}.csv",
-            config,
-            allowed_labels,
-            args.rebuild_features,
-            "external_muller",
+        ground_truth_x, ground_truth_y = _load_pair(
+            args.feature_dir, split, allowed_labels, True
         )
-        primary_x, primary_y = _features(
-            _primary_split(primary_source, split),
-            args.feature_dir / f"primary_{split}.csv",
-            config,
-            allowed_labels,
-            args.rebuild_features,
-            "primary_full_chamber",
+        segmented_x, segmented_y = _load_pair(
+            args.feature_dir, split, allowed_labels, False
         )
-        matrix = np.concatenate((external_x, primary_x), axis=0)
-        labels = np.concatenate((external_y, primary_y), axis=0)
-        split_tables[split] = (matrix, labels)
+        split_tables[split] = (ground_truth_x, ground_truth_y)
+        hybrid_tables[split] = (
+            np.concatenate((ground_truth_x, segmented_x), axis=0),
+            np.concatenate((ground_truth_y, segmented_y), axis=0),
+        )
         class_counts[split] = {
-            "external": dict(sorted(Counter(external_y).items())),
-            "primary": dict(sorted(Counter(primary_y).items())),
-            "combined": dict(sorted(Counter(labels).items())),
+            "ground_truth": dict(sorted(Counter(ground_truth_y).items())),
+            "segmented_augmentation": dict(sorted(Counter(segmented_y).items())),
+            "hybrid_training": dict(sorted(Counter(hybrid_tables[split][1]).items())),
         }
         print(
-            f"{split}: {len(labels)} combined tracks "
-            f"(external={len(external_y)}, primary={len(primary_y)})"
+            f"{split}: {len(ground_truth_y)} ground-truth particles; "
+            f"{len(segmented_y)} segmented augmentations"
         )
 
-    development_x, development_y = split_tables["development"]
+    development_x, development_y = hybrid_tables["development"]
     validation_x, validation_y = split_tables["validation"]
     candidates = []
     best = None
@@ -286,14 +299,17 @@ def main() -> int:
     _, best_parameters, _, balancing, best_index = best
     
     # Refit on combined (Development + Validation) data
-    train_x = np.concatenate((development_x, validation_x), axis=0)
-    train_y = np.concatenate((development_y, validation_y), axis=0)
+    train_x = np.concatenate((development_x, hybrid_tables["validation"][0]), axis=0)
+    train_y = np.concatenate((development_y, hybrid_tables["validation"][1]), axis=0)
     
     final_model = make_pipeline(best_parameters, seed)
     final_model.fit(train_x, train_y)
     
     final_x, final_y = split_tables["final_test"]
     final_metrics = evaluate(final_model, final_x, final_y)
+    segmented_final_metrics = evaluate(final_model, *(_load_pair(
+        args.feature_dir, "final_test", allowed_labels, False
+    )))
     selected_validation = candidates[best_index - 1]["validation"]
 
     bundle = {
@@ -312,8 +328,8 @@ def main() -> int:
     report = {
         "method": "RobustScaler + SVC (with Dev+Val Retraining)",
         "feature_source": (
-            "combined primary and external automatic segmentation contours "
-            "labelled by COCO-mask overlap"
+            "hybrid ground-truth masks and production-segmented contours; "
+            "validation and final-test use ground-truth records"
         ),
         "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
         "feature_columns": FEATURE_COLUMNS,
@@ -322,6 +338,7 @@ def main() -> int:
         "selected_candidate": best_index,
         "selected_parameters": best_parameters,
         "final_test": final_metrics,
+        "segmented_final_test": segmented_final_metrics,
         "model_path": str(args.output),
     }
     report_path = args.output.with_name("svm_training_report.json")

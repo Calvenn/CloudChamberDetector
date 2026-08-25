@@ -17,12 +17,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from cloud_chamber.config import load_config
 from cloud_chamber.ml.contour_dataset import build_segmented_feature_csv, load_feature_csv
 from cloud_chamber.ml.member_models.decision_tree import (
+    FEATURE_COLUMNS,
     PARAMETER_CANDIDATES,
     build_training_report,
     evaluate,
+    make_model,
     save_model,
     train_candidates,
 )
+from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS as SHARED_FEATURE_COLUMNS
 
 SPLITS = ("development", "validation", "final_test")
 
@@ -43,7 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--feature-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "features" / "muller",
+        default=PROJECT_ROOT / "data" / "features" / "mlp" / "muller",
+        help="Canonical shared ground-truth and production-segmented feature tables.",
     )
     parser.add_argument(
         "--output",
@@ -98,51 +102,77 @@ def _features(
     return load_feature_csv(cache, labels)
 
 
+def _load_pair(
+    root: Path, split: str, labels: set[str], ground_truth: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    paths = (
+        (
+            root / "ground_truth" / f"external_{split}.csv",
+            root / "ground_truth" / f"primary_{split}.csv",
+        )
+        if ground_truth
+        else (root / f"{split}.csv", root / f"primary_{split}.csv")
+    )
+    tables = [load_feature_csv(path, labels) for path in paths]
+    return (
+        np.concatenate([_decision_tree_matrix(item[0]) for item in tables], axis=0),
+        np.concatenate([item[1] for item in tables], axis=0),
+    )
+
+
+def _decision_tree_matrix(raw_matrix: np.ndarray) -> np.ndarray:
+    """Project the shared 16-column table onto the tree's named 10 columns."""
+    indices = [SHARED_FEATURE_COLUMNS.index(column) for column in FEATURE_COLUMNS]
+    return raw_matrix[:, indices]
+
+
 def main() -> int:
     args = parse_args()
     config = load_config(args.config)
     seed = int(config["project"]["random_seed"])
     allowed = set(config["classification"]["supported_classes"])
     args.feature_dir.mkdir(parents=True, exist_ok=True)
-    primary_source = args.primary_split_root / "annotations_coco.json"
-
     tables = {}
+    hybrid_tables = {}
     counts = {}
     for split in SPLITS:
-        external_x, external_y = _features(
-            args.split_root / split / "annotations_coco.json",
-            args.feature_dir / f"{split}.csv",
-            config,
-            allowed,
-            args.rebuild_features,
-            "external_muller",
+        ground_truth_x, ground_truth_y = _load_pair(
+            args.feature_dir, split, allowed, True
         )
-        primary_x, primary_y = _features(
-            _primary_split(primary_source, split),
-            args.feature_dir / f"primary_{split}.csv",
-            config,
-            allowed,
-            args.rebuild_features,
-            "primary_full_chamber",
+        segmented_x, segmented_y = _load_pair(
+            args.feature_dir, split, allowed, False
         )
-        matrix = np.concatenate((external_x, primary_x), axis=0)
-        labels = np.concatenate((external_y, primary_y), axis=0)
-        tables[split] = (matrix, labels)
+        tables[split] = (ground_truth_x, ground_truth_y)
+        hybrid_tables[split] = (
+            np.concatenate((ground_truth_x, segmented_x), axis=0),
+            np.concatenate((ground_truth_y, segmented_y), axis=0),
+        )
         counts[split] = {
-            "external": dict(sorted(Counter(external_y).items())),
-            "primary": dict(sorted(Counter(primary_y).items())),
-            "combined": dict(sorted(Counter(labels).items())),
+            "ground_truth": dict(sorted(Counter(ground_truth_y).items())),
+            "segmented_augmentation": dict(sorted(Counter(segmented_y).items())),
+            "hybrid_training": dict(sorted(Counter(hybrid_tables[split][1]).items())),
         }
         print(
-            f"{split}: {len(labels)} combined tracks "
-            f"(external={len(external_y)}, primary={len(primary_y)})"
+            f"{split}: {len(ground_truth_y)} ground-truth particles; "
+            f"{len(segmented_y)} segmented augmentations"
         )
 
     candidates, best_index, model = train_candidates(
-        *tables["development"], *tables["validation"], seed
+        *hybrid_tables["development"], *tables["validation"], seed
     )
-    final_metrics = evaluate(model, *tables["final_test"])
     selected = candidates[best_index - 1]
+    refit_x = np.concatenate(
+        (hybrid_tables["development"][0], hybrid_tables["validation"][0]), axis=0
+    )
+    refit_y = np.concatenate(
+        (hybrid_tables["development"][1], hybrid_tables["validation"][1]), axis=0
+    )
+    model = make_model(selected["parameters"], seed)
+    model.fit(refit_x, refit_y)
+    final_metrics = evaluate(model, *tables["final_test"])
+    segmented_final_metrics = evaluate(
+        model, *_load_pair(args.feature_dir, "final_test", allowed, False)
+    )
     save_model(
         model,
         args.output,
@@ -155,6 +185,11 @@ def main() -> int:
     report = build_training_report(
         candidates, best_index, counts, final_metrics, args.output
     )
+    report["feature_source"] = (
+        "hybrid ground-truth masks and production-segmented contours; "
+        "validation and final-test use ground-truth records"
+    )
+    report["segmented_final_test"] = segmented_final_metrics
     report_path = args.output.with_name("decision_tree_training_report.json")
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Saved model: {args.output}")

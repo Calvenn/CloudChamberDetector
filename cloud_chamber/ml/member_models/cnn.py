@@ -133,10 +133,22 @@ class CocoTrackSample:
     label: int
 
 
+@dataclass(frozen=True)
+class PreparedTrackSample:
+    """A production-segmented patch prepared before CNN training."""
+
+    patch: np.ndarray
+    label: int
+
+
 class CocoPatchDataset(Dataset):
     """One labelled particle-image crop per COCO instance annotation."""
 
-    def __init__(self, samples: list[CocoTrackSample], augment: bool = False):
+    def __init__(
+        self,
+        samples: list[CocoTrackSample | PreparedTrackSample],
+        augment: bool = False,
+    ):
         self.samples = samples
         self.augment = augment
         # Crops are immutable training inputs.  Building them once avoids
@@ -144,8 +156,10 @@ class CocoPatchDataset(Dataset):
         self.patches = [self._load_patch(sample) for sample in samples]
 
     @staticmethod
-    def _load_patch(sample: CocoTrackSample) -> np.ndarray:
+    def _load_patch(sample: CocoTrackSample | PreparedTrackSample) -> np.ndarray:
         """Read one source image and prepare its labelled patch once."""
+        if isinstance(sample, PreparedTrackSample):
+            return sample.patch
         image = cv2.imread(str(sample.image_path), cv2.IMREAD_COLOR)
         if image is None:
             raise FileNotFoundError(f"Cannot read training image: {sample.image_path}")
@@ -196,21 +210,106 @@ def coco_track_samples(
         )
     return samples
 
+
+def segmented_track_samples(
+    annotation_path: Path,
+    class_mapping: dict[str, int],
+    config: dict,
+    split: str | None = None,
+    minimum_label_overlap: float = 0.5,
+) -> list[PreparedTrackSample]:
+    """Build labelled patches from the exact production segmentation path."""
+    from app import _process_tiled_pipeline_image
+
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    categories = {int(item["id"]): str(item["name"]) for item in payload["categories"]}
+    images = {
+        int(item["id"]): item
+        for item in payload["images"]
+        if split is None or item.get("split") == split
+    }
+    grouped: dict[int, list[dict]] = {}
+    for annotation in payload["annotations"]:
+        image_id = int(annotation["image_id"])
+        label = categories[int(annotation["category_id"])]
+        if image_id in images and label in class_mapping:
+            grouped.setdefault(image_id, []).append(annotation)
+
+    samples: list[PreparedTrackSample] = []
+    for image_id, annotations in grouped.items():
+        image_path = (annotation_path.parent / images[image_id]["file_name"]).resolve()
+        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise FileNotFoundError(f"Cannot read training image: {image_path}")
+        result = _process_tiled_pipeline_image(image, config)
+        segmented = result["segmentation"]
+        contour_by_box = {
+            tuple(int(value) for value in cv2.boundingRect(contour)): contour
+            for contour in segmented.contours
+        }
+        truth = [
+            (
+                annotation,
+                annotation_to_mask(annotation, image.shape[:2]) > 0,
+            )
+            for annotation in annotations
+        ]
+        for track in result["features"]:
+            contour = contour_by_box.get(track.bounding_box)
+            if contour is None:
+                continue
+            x, y, width, height = track.bounding_box
+            local_contour = contour.copy()
+            local_contour[:, 0, 0] -= x
+            local_contour[:, 0, 1] -= y
+            predicted = np.zeros((height, width), dtype=np.uint8)
+            cv2.drawContours(predicted, [local_contour], -1, 255, cv2.FILLED)
+            pixels = predicted > 0
+            pixel_count = max(int(np.count_nonzero(pixels)), 1)
+            overlaps = [
+                np.count_nonzero(pixels & mask[y:y + height, x:x + width])
+                / pixel_count
+                for _, mask in truth
+            ]
+            if not overlaps or max(overlaps) < minimum_label_overlap:
+                continue
+            annotation = truth[int(np.argmax(overlaps))][0]
+            label_name = categories[int(annotation["category_id"])]
+            samples.append(
+                PreparedTrackSample(
+                    patch=crop_track_patch(
+                        result["input_image"],
+                        track.bounding_box,
+                        segmented.binary_mask,
+                    ),
+                    label=class_mapping[label_name],
+                )
+            )
+    return samples
+
 def build_dataloaders(
     dataset_root: str | Path = DEFAULT_DATASET_ROOT,
     primary_dataset_root: str | Path = PROJECT_ROOT / "dataset" / "primary_dataset_split",
     batch_size: int = 16,
     random_seed: int = 42,
-) -> tuple[dict[str, DataLoader], dict[str, int], dict[str, dict[str, dict]]]:
+    config: dict | None = None,
+) -> tuple[
+    dict[str, DataLoader],
+    dict[str, DataLoader],
+    dict[str, int],
+    dict[str, dict[str, dict]],
+]:
     dataset_root = Path(dataset_root)
     primary_dataset_root = Path(primary_dataset_root)
     class_mapping = build_class_mapping()
+    config = config or load_config(PROJECT_ROOT / "config.yaml")
     primary_annotations = primary_dataset_root / "annotations_coco.json"
     if not primary_annotations.is_file():
         raise FileNotFoundError(f"Primary annotation file not found: {primary_annotations}")
 
     class_counts = {}
     loaders = {}
+    segmented_loaders = {}
     generator = torch.Generator().manual_seed(random_seed)
     inverse_mapping = {value: key for key, value in class_mapping.items()}
     for split in SPLIT_NAMES:
@@ -219,17 +318,30 @@ def build_dataloaders(
             raise FileNotFoundError(f"External annotation file not found: {external_annotations}")
         external_samples = coco_track_samples(external_annotations, class_mapping)
         primary_samples = coco_track_samples(primary_annotations, class_mapping, split=split)
-        samples = external_samples + primary_samples
-        if not samples:
+        ground_truth_samples = external_samples + primary_samples
+        segmented_samples = segmented_track_samples(
+            external_annotations, class_mapping, config
+        ) + segmented_track_samples(
+            primary_annotations, class_mapping, config, split=split
+        )
+        samples = (
+            ground_truth_samples + segmented_samples
+            if split == "development"
+            else ground_truth_samples
+        )
+        if not ground_truth_samples:
             raise ValueError(f"No supported image-patch samples found for {split}")
-        def count_labels(items: list[CocoTrackSample]) -> dict[str, int]:
+        def count_labels(items) -> dict[str, int]:
             return dict(sorted(Counter(inverse_mapping[item.label] for item in items).items()))
         class_counts[split] = {
-            "external": count_labels(external_samples),
-            "primary": count_labels(primary_samples),
-            "combined": count_labels(samples),
+            "ground_truth": count_labels(ground_truth_samples),
+            "segmented_augmentation": count_labels(segmented_samples),
+            "hybrid_training": count_labels(ground_truth_samples + segmented_samples),
         }
-        print(f"{split}: {len(samples)} labelled image patches (external={len(external_samples)}, primary={len(primary_samples)})")
+        print(
+            f"{split}: {len(ground_truth_samples)} ground-truth patches; "
+            f"{len(segmented_samples)} segmented patches"
+        )
         dataset = CocoPatchDataset(samples, augment=(split == "development"))
         loaders[split] = DataLoader(
             dataset,
@@ -237,7 +349,12 @@ def build_dataloaders(
             shuffle=(split == "development"),
             generator=generator if split == "development" else None,
         )
-    return loaders, class_mapping, class_counts
+        segmented_loaders[split] = DataLoader(
+            CocoPatchDataset(segmented_samples, augment=False),
+            batch_size=batch_size,
+            shuffle=False,
+        )
+    return loaders, segmented_loaders, class_mapping, class_counts
 
 def evaluate_loader(model: nn.Module, loader: DataLoader, class_mapping: dict[str, int]) -> dict:
     from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix, f1_score
@@ -279,14 +396,16 @@ def train_cnn(
     batch_size: int = 16,
     learning_rate: float = 1e-3,
     random_seed: int = 42,
+    config: dict | None = None,
 ) -> dict[str, Any]:
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
-    loaders, class_mapping, class_counts = build_dataloaders(
+    loaders, segmented_loaders, class_mapping, class_counts = build_dataloaders(
         dataset_root=dataset_root,
         primary_dataset_root=primary_dataset_root,
         batch_size=batch_size,
         random_seed=random_seed,
+        config=config,
     )
     
     train_loader = loaders["development"]
@@ -363,6 +482,9 @@ def train_cnn(
 
     validation_metrics = evaluate_loader(model, val_loader, class_mapping)
     final_test_metrics = evaluate_loader(model, test_loader, class_mapping)
+    segmented_final_test_metrics = evaluate_loader(
+        model, segmented_loaders["final_test"], class_mapping
+    )
 
     return {
         "model": model,
@@ -375,6 +497,7 @@ def train_cnn(
         "random_seed": random_seed,
         "validation_metrics": validation_metrics,
         "final_test_metrics": final_test_metrics,
+        "segmented_final_test_metrics": segmented_final_test_metrics,
     }
 
 def load_model(model_path: str | Path) -> dict:
@@ -579,6 +702,7 @@ def main() -> int:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         random_seed=random_seed,
+        config=config,
     )
     
     model_path = save_model(result["model"], args.output, metadata={
@@ -594,8 +718,8 @@ def main() -> int:
     report = {
         "method": "TrackPatchCNN",
         "feature_source": (
-            "combined primary and external COCO instance masks; each labelled "
-            "particle is cropped from its source image and resized"
+            "hybrid ground-truth masked patches and production-segmented "
+            "patches; validation and final-test use ground-truth patches"
         ),
         "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
         "input": "masked greyscale particle-track patches resized to 128x128",
@@ -610,8 +734,11 @@ def main() -> int:
             "learning_rate": args.learning_rate,
             "patch_size": PATCH_SIZE,
         },
+        "selected_epoch": int(np.argmax(result["history"]["val_macro_f1"])) + 1,
+        "history": result["history"],
         "validation": result["validation_metrics"],
         "final_test": result["final_test_metrics"],
+        "segmented_final_test": result["segmented_final_test_metrics"],
         "model_path": str(model_path),
     }
     
