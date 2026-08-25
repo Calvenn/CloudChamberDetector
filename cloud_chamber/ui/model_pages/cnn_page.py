@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
+import plotly.graph_objects as go
 import streamlit as st
 
 from cloud_chamber.ml.member_models.cnn import (
@@ -50,6 +52,7 @@ def render(config: dict, context: PageContext) -> None:
         return
 
     model_bundle = load_model(MODEL_PATH)
+    _render_cnn_model_performance(Path("models/cnn_training_report.json"))
     confidence_threshold = st.slider(
         "Confidence reporting threshold",
         min_value=0.0,
@@ -80,10 +83,16 @@ def render(config: dict, context: PageContext) -> None:
         batch_results = {}
         progress = st.progress(0.0, text="Processing batch...")
         for index, sample in enumerate(samples):
-            sample_result = context.process_pipeline_image(
-                sample["image"],
-                config,
-                st.session_state.get("calibration_settings"),
+            current_result = st.session_state.get("pipeline_result")
+            is_current_single_input = (
+                len(samples) == 1
+                and current_result is not None
+                and sample["name"] == st.session_state.get("input_name")
+            )
+            sample_result = (
+                current_result if is_current_single_input else context.process_pipeline_image(
+                    sample["image"], config, st.session_state.get("calibration_settings")
+                )
             )
             sample_predictions = predict_tracks(
                 model_bundle,
@@ -154,6 +163,8 @@ def render(config: dict, context: PageContext) -> None:
                         features=item_result["features"],
                         predictions=item_predictions,
                         confidence_threshold=confidence_threshold,
+                        quality_assessments=item_quality,
+                        instance_mask=item_result["segmentation"].binary_mask,
                     )
                     st.image(context.bgr_to_rgb(item_overlay), width=700)
                 else:
@@ -190,10 +201,15 @@ def render(config: dict, context: PageContext) -> None:
         st.session_state[quality_state_key] = quality_assessments
 
     overlay, report_rows = build_visual_report(
-        image=result["input_image"],
+        image=result.get("original_image", result["input_image"]),
         features=result["features"],
         predictions=predictions,
         confidence_threshold=confidence_threshold,
+        quality_assessments=quality_assessments,
+        original_boxes=result.get("original_bounding_boxes"),
+        instance_mask=result.get(
+            "original_segmentation_mask", result["segmentation"].binary_mask
+        ),
     )
 
     for row, track, prediction, quality in zip(
@@ -248,6 +264,22 @@ def render(config: dict, context: PageContext) -> None:
     }
     metadata["spatial_scaling"] = result["spatial_scaling"]
     metadata["rectification"] = result["rectification"]
+    track_reports = [
+        {
+            "track_id": track.track_id,
+            "prediction": prediction,
+            "quality": quality,
+            "reporting_status": reporting_status(
+                confidence=float(prediction["confidence"]),
+                confidence_threshold=confidence_threshold,
+                quality_score=int(quality["score"]),
+            ),
+            "features": context.feature_row(track, result["centimetres_per_pixel"]),
+        }
+        for track, prediction, quality in zip(
+            result["features"], predictions, quality_assessments, strict=True
+        )
+    ]
 
     st.subheader("Image-level result summary")
     summary_columns = st.columns(6)
@@ -269,15 +301,67 @@ def render(config: dict, context: PageContext) -> None:
         use_container_width=True,
         hide_index=True,
     )
+    _render_cnn_output_charts(summary, predictions, confidence_threshold)
 
     st.subheader("Annotated classification overview")
-    st.image(context.bgr_to_rgb(overlay))
-    st.markdown(
-        "**Legend:** 🟧 Alpha · 🟦 Electron/Positron · 🟩 Proton · "
-        "🟨 Uncertain"
+    particle_options = [
+        DISPLAY_NAMES.get(str(class_name), str(class_name))
+        for class_name in model_bundle["classes"]
+    ]
+    selected_particles = st.multiselect(
+        "Show particle types",
+        options=particle_options,
+        default=particle_options,
+        key=f"cnn_particle_filter_{st.session_state['input_name']}",
+        help="This filter changes only the visualisation; model predictions remain unchanged.",
     )
-    st.dataframe(report_rows, use_container_width=True, hide_index=True)
-
+    selected_indices = [
+        index for index, prediction in enumerate(predictions)
+        if prediction["particle_type"] in selected_particles
+    ]
+    filtered_features = [result["features"][index] for index in selected_indices]
+    filtered_predictions = [predictions[index] for index in selected_indices]
+    filtered_quality = [quality_assessments[index] for index in selected_indices]
+    source_boxes = result.get("original_bounding_boxes")
+    filtered_boxes = [source_boxes[index] for index in selected_indices] if source_boxes else None
+    filtered_overlay, filtered_rows = build_visual_report(
+        image=result.get("original_image", result["input_image"]),
+        features=filtered_features,
+        predictions=filtered_predictions,
+        confidence_threshold=confidence_threshold,
+        quality_assessments=filtered_quality,
+        original_boxes=filtered_boxes,
+        instance_mask=result.get(
+            "original_segmentation_mask", result["segmentation"].binary_mask
+        ),
+    )
+    st.image(context.bgr_to_rgb(filtered_overlay))
+    st.caption(f"Showing {len(filtered_rows)} of {len(report_rows)} classified tracks.")
+    st.markdown(
+        "**Legend:** 🟩 Alpha · 🟦 Electron/Positron · 🟥 Proton · "
+        "🟪 V-track · Uncertain predictions retain their class colour · "
+        "Grey dashed: review segmentation"
+    )
+    compact_rows = [
+        {
+            "Track": row["Track"],
+            "Particle": row["Particle type"],
+            "Confidence": row["Confidence"],
+            "Decision": row.get("Reporting decision", row["Status"]),
+            "Contour quality": row["Contour quality"],
+        }
+        for row in filtered_rows
+    ]
+    st.dataframe(
+        compact_rows,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Confidence": st.column_config.ProgressColumn(
+                min_value=0.0, max_value=1.0, format="percent"
+            )
+        },
+    )
     batch_row = {
         "Input": st.session_state["input_name"],
         "Source": st.session_state["source_description"],
@@ -294,6 +378,17 @@ def render(config: dict, context: PageContext) -> None:
         "Processing time (ms)": summary["processing_time_ms"],
     }
     st.session_state["batch_reports"][st.session_state["input_name"]] = batch_row
+    _render_batch_summary()
+
+    complete_report = {
+        "metadata": metadata,
+        "summary": summary,
+        "tracks": track_reports,
+        "interpretation_note": (
+            "Model confidence estimates class preference. Contour quality is "
+            "an explainable heuristic and is not a correctness probability."
+        ),
+    }
 
     safe_name = Path(st.session_state["input_name"]).stem
     st.subheader("Download reproducible report")
@@ -312,7 +407,158 @@ def render(config: dict, context: PageContext) -> None:
     )
     downloads[2].download_button(
         "PDF summary",
-        data=encode_pdf_report(overlay, {"metadata": metadata, "summary": summary}),
+        data=encode_pdf_report(overlay, complete_report),
         file_name=f"{safe_name}_cnn_report.pdf",
         mime="application/pdf",
     )
+
+
+def _render_cnn_output_charts(
+    summary: dict,
+    predictions: list[dict],
+    confidence_threshold: float,
+) -> None:
+    """Show live CNN outputs without presenting them as labelled accuracy."""
+    st.subheader("CNN output visualisations")
+    st.caption(
+        "These charts summarise the current predictions. Accuracy, precision, "
+        "recall and F1-score are calculated separately using labelled test data."
+    )
+    display_colours = {
+        "Alpha": "#00B83F",
+        "Electron/Positron": "#1976D2",
+        "Proton": "#E53935",
+        "V-track": "#9C27B0",
+    }
+    class_names = list(summary["class_counts"])
+    class_counts = [summary["class_counts"][name] for name in class_names]
+    left, right = st.columns(2)
+    with left:
+        figure = go.Figure(
+            go.Pie(
+                labels=class_names,
+                values=class_counts,
+                hole=0.48,
+                marker={"colors": [display_colours[name] for name in class_names]},
+                textinfo="label+value+percent",
+                sort=False,
+            )
+        )
+        figure.update_layout(
+            title="Predicted particle composition",
+            margin={"l": 10, "r": 10, "t": 55, "b": 10},
+        )
+        st.plotly_chart(figure, use_container_width=True)
+    with right:
+        figure = go.Figure()
+        figure.add_bar(
+            y=["Detected tracks"], x=[summary["confident_classifications"]],
+            name="Confident", orientation="h", marker_color="#2ECC71",
+            text=[summary["confident_classifications"]], textposition="inside",
+        )
+        figure.add_bar(
+            y=["Detected tracks"], x=[summary["uncertain_classifications"]],
+            name="Uncertain", orientation="h", marker_color="#FFD700",
+            text=[summary["uncertain_classifications"]], textposition="inside",
+        )
+        figure.update_layout(
+            title=f"Reporting status at {confidence_threshold:.0%} confidence",
+            barmode="stack", xaxis_title="Number of tracks",
+            margin={"l": 10, "r": 10, "t": 55, "b": 10},
+        )
+        st.plotly_chart(figure, use_container_width=True)
+
+    track_labels = [f"T{item['track_id']}" for item in predictions]
+    confidences = [float(item["confidence"]) for item in predictions]
+    particle_types = [str(item["particle_type"]) for item in predictions]
+    figure = go.Figure(
+        go.Bar(
+            x=track_labels,
+            y=confidences,
+            marker_color=[display_colours.get(name, "#A0A0A0") for name in particle_types],
+            customdata=particle_types,
+            text=[f"{value:.0%}" for value in confidences],
+            textposition="outside",
+            hovertemplate=(
+                "Track: %{x}<br>Prediction: %{customdata}<br>"
+                "Confidence: %{y:.1%}<extra></extra>"
+            ),
+        )
+    )
+    figure.add_hline(
+        y=confidence_threshold, line_dash="dash", line_color="#FF4B4B",
+        annotation_text=f"Reporting threshold ({confidence_threshold:.0%})",
+        annotation_position="top left",
+    )
+    figure.update_layout(
+        title="Confidence for each detected track", xaxis_title="Track ID",
+        yaxis_title="CNN confidence",
+        yaxis={"range": [0, 1.08], "tickformat": ".0%"},
+        margin={"l": 10, "r": 10, "t": 60, "b": 10}, showlegend=False,
+    )
+    st.plotly_chart(figure, use_container_width=True)
+
+
+def _render_cnn_model_performance(report_path: Path) -> None:
+    """Present saved labelled CNN final-test results independently of uploads."""
+    st.subheader("CNN model performance")
+    if not report_path.exists():
+        st.info("Train the CNN to generate its labelled final-test performance report.")
+        return
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        final_test = report["final_test"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        st.warning(f"The CNN training report cannot be read: {error}")
+        return
+    metrics = st.columns(4)
+    for column, label, key in zip(
+        metrics,
+        ("Accuracy", "Balanced accuracy", "Macro F1", "Weighted F1"),
+        ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1"),
+        strict=True,
+    ):
+        column.metric(label, f"{float(final_test[key]):.3f}")
+    st.caption("Macro F1 is the main result because it gives every particle class equal weight.")
+    figure = go.Figure(
+        go.Bar(
+            x=["Accuracy", "Balanced accuracy", "Macro F1", "Weighted F1"],
+            y=[float(final_test[key]) for key in ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1")],
+            text=[f"{float(final_test[key]):.3f}" for key in ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1")],
+            textposition="outside",
+            marker_color=["#1976D2", "#26A69A", "#F9A825", "#7CB342"],
+        )
+    )
+    figure.update_layout(
+        title="Labelled final-test performance", yaxis={"title": "Score", "range": [0, 1.08]},
+        showlegend=False, margin={"l": 10, "r": 10, "t": 55, "b": 10},
+    )
+    st.plotly_chart(figure, use_container_width=True)
+    classification = final_test.get("classification_report", {})
+    rows = [
+        {
+            "Particle": DISPLAY_NAMES.get(class_name, class_name),
+            "Precision": float(classification.get(class_name, {}).get("precision", 0.0)),
+            "Recall": float(classification.get(class_name, {}).get("recall", 0.0)),
+            "F1": float(classification.get(class_name, {}).get("f1-score", 0.0)),
+        }
+        for class_name in final_test.get("class_names", [])
+    ]
+    if rows:
+        st.markdown("**Performance by particle class**")
+        st.dataframe(
+            rows, use_container_width=True, hide_index=True,
+            column_config={
+                "Precision": st.column_config.NumberColumn(format="%.3f"),
+                "Recall": st.column_config.NumberColumn(format="%.3f"),
+                "F1": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0, format="%.3f"),
+            },
+        )
+
+
+def _render_batch_summary() -> None:
+    """Show image and video-frame classification summaries for this session."""
+    rows = list(st.session_state.get("batch_reports", {}).values())
+    if rows:
+        st.subheader("Batch and video-frame summary")
+        st.dataframe(rows, use_container_width=True, hide_index=True)
