@@ -27,6 +27,10 @@ from cloud_chamber.calibration import (
 )
 from cloud_chamber.enhancement import enhance_image
 from cloud_chamber.features import extract_track_features
+from cloud_chamber.ml.artifact_filter import (
+    filter_mask as filter_artifact_candidates,
+    load_model as load_artifact_filter,
+)
 from cloud_chamber.ml.member_models.extra_trees import (
     EXTRA_TREES_CLASS_COLOURS,
     build_visual_report as build_extra_trees_visual_report,
@@ -900,11 +904,46 @@ def _process_tiled_pipeline_image(
         denoised=np.clip(sums["denoised"] / safe_counts, 0, 255).astype(np.uint8),
         enhanced=np.clip(sums["enhanced"] / safe_counts, 0, 255).astype(np.uint8),
     )
-    merged_mask = merge_tile_masks(processing_copy.shape, masks, tiles)
+    merged_mask = merge_tile_masks(
+        processing_copy.shape,
+        masks,
+        tiles,
+        minimum_overlap_agreement=float(
+            scaling_config.get("minimum_overlap_agreement", 0.0)
+        ),
+    )
     merged_intermediate = {
         name: merge_tile_masks(processing_copy.shape, values, tiles)
         for name, values in intermediate_masks.items()
     }
+    artifact_filter_stats = {
+        "candidate_count": 0,
+        "accepted_count": 0,
+        "rejected_count": 0,
+    }
+    artifact_filter_enabled = bool(
+        selected_profile.get(
+            "artifact_filter_enabled",
+            config["segmentation"].get("artifact_filter_enabled", False),
+        )
+    )
+    if artifact_filter_enabled:
+        model_path = Path(
+            selected_profile.get(
+                "artifact_filter_model",
+                config["segmentation"].get(
+                    "artifact_filter_model", "models/artifact_filter.joblib"
+                ),
+            )
+        )
+        if not model_path.is_absolute():
+            model_path = Path(__file__).resolve().parent / model_path
+        merged_intermediate["candidates_before_artifact_filter"] = merged_mask.copy()
+        merged_mask, artifact_filter_stats = filter_artifact_candidates(
+            merged_mask,
+            merged_enhancement.enhanced,
+            load_artifact_filter(model_path),
+        )
     contours, _ = cv2.findContours(
         merged_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
@@ -921,6 +960,11 @@ def _process_tiled_pipeline_image(
             "tile_count": len(tiles),
             "tile_size": tile_size,
             "overlap_ratio": overlap_ratio,
+            "artifact_filter_enabled": artifact_filter_enabled,
+            **{
+                f"artifact_filter_{name}": value
+                for name, value in artifact_filter_stats.items()
+            },
         },
     )
     feature_minimum_area = float(segmentation_settings["minimum_object_area"])

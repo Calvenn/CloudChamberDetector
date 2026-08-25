@@ -66,11 +66,11 @@ def render(context: PageContext) -> None:
 
     if report_path.exists():
 
-        training_report = json.loads(
+        training_report = _normalise_training_report(json.loads(
             report_path.read_text(
                 encoding="utf-8"
             )
-        )
+        ))
 
         validation = training_report["validation"]
 
@@ -816,3 +816,46 @@ is selected.
             ),
             mime="text/csv",
         )
+
+def _normalise_training_report(report: dict) -> dict:
+    """Accept both the original and hybrid Extra Trees report schemas."""
+    candidates = report.get("candidate_results", [])
+    normalised_candidates = []
+    for candidate in candidates:
+        if "name" in candidate:
+            normalised_candidates.append(candidate)
+            continue
+        parameters = candidate.get("parameters", {})
+        validation = candidate.get("validation", {})
+        normalised_candidates.append(
+            {
+                **candidate,
+                **parameters,
+                "name": (
+                    f"Hybrid candidate {candidate.get('candidate', '?')}: "
+                    f"{parameters.get('n_estimators', '?')} trees, "
+                    f"depth={parameters.get('max_depth')}"
+                ),
+                "min_samples_leaf": parameters.get("min_samples_leaf", 1),
+                "class_weight": parameters.get(
+                    "class_weight", "balanced_subsample"
+                ),
+                "validation_macro_f1": validation.get("macro_f1", 0.0),
+            }
+        )
+    report["candidate_results"] = normalised_candidates
+
+    selected = report.get("selected_candidate")
+    if not isinstance(selected, dict):
+        selected = next(
+            (
+                candidate
+                for candidate in normalised_candidates
+                if candidate.get("candidate") == selected
+            ),
+            None,
+        )
+        report["selected_candidate"] = selected
+    if "validation" not in report and selected is not None:
+        report["validation"] = selected.get("validation", {})
+    return report

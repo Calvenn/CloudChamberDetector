@@ -49,6 +49,9 @@ enhancement:
 spatial_scaling:
   tile_size: 800
   overlap_ratio: 0.15
+  # Union remains active: overlap consensus was evaluated but increased false
+  # contours on the labelled 2h24m19s 24979 final-test image.
+  minimum_overlap_agreement: 0.0
   processing_width: 640
   processing_height: 640
   # Existing morphology and contour limits were validated at 1920 pixels.
@@ -56,6 +59,10 @@ spatial_scaling:
   pixel_parameter_reference_size: 1920
 
 segmentation:
+  # A separate binary model removes likely non-particle contours after the
+  # classical mask is merged. It does not change any classification model.
+  artifact_filter_enabled: true
+  artifact_filter_model: models/artifact_filter.joblib
   # Otsu supplies an image-adaptive baseline; two connected thresholds then
   # retain faint electron pixels only when they belong to a strong track seed.
   threshold_method: white_tophat_otsu_hysteresis
@@ -93,6 +100,13 @@ segmentation:
   # Short fragments have less stable geometry than complete tracks. Permit
   # mildly elongated pieces to join, then apply the stricter 1.5 final rule.
   prefilter_alignment_minimum_aspect: 1.3
+  # Curved tracks are linked using skeleton endpoint tangents and require
+  # faint bright evidence along a shorter connector.
+  curved_alignment_merge: true
+  curved_merge_gap: 120
+  curved_merge_tangent_angle: 50
+  curved_merge_minimum_aspect: 1.2
+  curved_merge_minimum_bright_fraction: 0.15
   # Opening is disabled so it cannot erase tracks only 1-2 pixels wide.
   apply_opening: false
   opening_kernel: 3
@@ -131,7 +145,11 @@ segmentation:
       right: 0.06
       top: 0.07
       bottom: 0.12
-      # High seed threshold (55) to suppress dense background snow noise
+      # Use the independently trained primary-domain filter. External images
+      # continue to use the global Müller filter above.
+      artifact_filter_enabled: true
+      artifact_filter_model: models/artifact_filter_primary.joblib
+      # High seed threshold (55) suppresses dense background snow noise.
       threshold_offset: 55
       top_hat_kernel: 61
       hysteresis_low_threshold_offset: 5

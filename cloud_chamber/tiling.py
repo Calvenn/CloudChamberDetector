@@ -201,17 +201,35 @@ def merge_tile_masks(
     image_shape: tuple[int, ...],
     masks: list[np.ndarray],
     tiles: list[ImageTile],
+    minimum_overlap_agreement: float = 0.0,
 ) -> np.ndarray:
-    """Union accepted masks in image space to merge overlap duplicates."""
+    """Merge masks in image space, optionally requiring overlap consensus.
+
+    Pixels covered by only one tile remain eligible. In overlap regions a
+    positive agreement ratio rejects detections that appear in only one view.
+    """
     if len(masks) != len(tiles):
         raise ValueError("Every tile must have exactly one processed mask")
-    merged = np.zeros(image_shape[:2], dtype=np.uint8)
+    if not 0.0 <= minimum_overlap_agreement <= 1.0:
+        raise ValueError("minimum_overlap_agreement must be in [0, 1]")
+    votes = np.zeros(image_shape[:2], dtype=np.uint16)
+    coverage = np.zeros(image_shape[:2], dtype=np.uint16)
     for processed_mask, tile in zip(masks, tiles, strict=True):
         item = tile.metadata
         mapped = map_processed_mask_to_image(processed_mask, item)
-        destination = merged[item.y_start:item.y_end, item.x_start:item.x_end]
-        np.maximum(destination, mapped, out=destination)
-    return merged
+        region = np.s_[item.y_start:item.y_end, item.x_start:item.x_end]
+        votes[region] += (mapped > 0).astype(np.uint16)
+        coverage[region] += 1
+    if minimum_overlap_agreement <= 0:
+        accepted = votes > 0
+    else:
+        required = np.where(
+            coverage <= 1,
+            1,
+            np.ceil(coverage.astype(np.float32) * minimum_overlap_agreement),
+        ).astype(np.uint16)
+        accepted = votes >= required
+    return np.where(accepted, 255, 0).astype(np.uint8)
 
 
 def draw_tile_boundaries(image: np.ndarray, tiles: list[ImageTile]) -> np.ndarray:

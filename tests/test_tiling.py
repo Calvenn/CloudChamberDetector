@@ -55,6 +55,23 @@ class TestAutomaticTiling(unittest.TestCase):
         self.assertEqual(merged.shape, image.shape[:2])
         self.assertGreater(int(np.count_nonzero(merged)), 0)
 
+    def test_overlap_consensus_rejects_one_tile_only_detection(self):
+        image = np.zeros((800, 1200, 3), dtype=np.uint8)
+        tiles = generate_overlapping_tiles(image, 800, (640, 640), 0.25)
+        masks = [np.zeros((640, 640), dtype=np.uint8) for _ in tiles]
+        # Source x=500 lies in the two-tile overlap. Mark it in only the first
+        # processed view; union retains it but consensus must reject it.
+        first = tiles[0].metadata
+        px = int(round((500 - first.x_start) * first.scale_x))
+        py = int(round((400 - first.y_start) * first.scale_y))
+        masks[0][py - 2:py + 3, px - 2:px + 3] = 255
+        union = merge_tile_masks(image.shape, masks, tiles)
+        consensus = merge_tile_masks(
+            image.shape, masks, tiles, minimum_overlap_agreement=0.75
+        )
+        self.assertGreater(int(np.count_nonzero(union)), 0)
+        self.assertEqual(int(np.count_nonzero(consensus)), 0)
+
     def test_pipeline_preserves_source_and_covers_full_image(self):
         image = np.zeros((992, 1312, 3), dtype=np.uint8)
         original = image.copy()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -144,6 +145,7 @@ def build_segmented_feature_csv(
     minimum_label_overlap: float = 0.5,
     roi_profile_name: str = "external_muller",
     merge_annotation_fragments: bool = False,
+    use_production_pipeline: bool = False,
 ) -> dict[str, int]:
     """Build labelled features from automatic contours, not perfect masks.
 
@@ -201,34 +203,53 @@ def build_segmented_feature_csv(
         if image is None:
             raise FileNotFoundError(f"Cannot read linked image: {image_path}")
         source_image_shape = image.shape[:2]
-        normalisation = select_and_scale_roi(image, target_size=target_size)
-        image = normalisation.image
-        margins = source_margins
-        enhanced = enhance_image(image, config["enhancement"])
-        segmented = segment_tracks(
-            enhanced.enhanced, segmentation_settings, margins
-        )
-        measured = extract_track_features(
-            segmented.binary_mask,
-            enhanced.enhanced,
-            minimum_area=feature_minimum_area,
-        )
+        if use_production_pipeline:
+            # Import lazily to avoid making the dataset module depend on the UI
+            # during ordinary ground-truth or legacy feature generation.
+            from app import _process_tiled_pipeline_image
+
+            pipeline_result = _process_tiled_pipeline_image(image, config)
+            segmented = pipeline_result["segmentation"]
+            enhanced = pipeline_result["enhancement"]
+            measured = pipeline_result["features"]
+            labelled_masks = [
+                (
+                    annotation,
+                    annotation_to_mask(annotation, source_image_shape) > 0,
+                )
+                for annotation in annotations
+            ]
+            production_feature_scale = (
+                target_size[0] / float(scaling_settings["tile_size"])
+            )
+        else:
+            normalisation = select_and_scale_roi(image, target_size=target_size)
+            image = normalisation.image
+            enhanced = enhance_image(image, config["enhancement"])
+            segmented = segment_tracks(
+                enhanced.enhanced, segmentation_settings, source_margins
+            )
+            measured = extract_track_features(
+                segmented.binary_mask,
+                enhanced.enhanced,
+                minimum_area=feature_minimum_area,
+            )
+            labelled_masks = [
+                (
+                    annotation,
+                    _scale_label_mask(
+                        annotation_to_mask(annotation, source_image_shape),
+                        normalisation.coordinates,
+                        target_size,
+                    ) > 0,
+                )
+                for annotation in annotations
+            ]
+            production_feature_scale = 1.0
         contour_by_box = {
             tuple(int(value) for value in cv2.boundingRect(contour)): contour
             for contour in segmented.contours
         }
-        labelled_masks = [
-            (
-                annotation,
-                _scale_label_mask(
-                    annotation_to_mask(annotation, source_image_shape),
-                    normalisation.coordinates,
-                    target_size,
-                ) > 0,
-            )
-            for annotation in annotations
-        ]
-
         matched_fragments: dict[int, list[tuple[np.ndarray, float]]] = defaultdict(list)
         annotation_by_id = {int(item["id"]): item for item in annotations}
         for track in measured:
@@ -290,6 +311,27 @@ def build_segmented_feature_csv(
                 # Component bridging should produce one contour. The largest
                 # result is a safe fallback for degenerate one-pixel links.
                 track = max(combined_features, key=lambda item: item.area_pixels)
+                if use_production_pipeline:
+                    track = replace(
+                        track,
+                        area_pixels=(
+                            track.area_pixels
+                            * production_feature_scale
+                            * production_feature_scale
+                        ),
+                        perimeter_pixels=(
+                            track.perimeter_pixels * production_feature_scale
+                        ),
+                        major_axis_pixels=(
+                            track.major_axis_pixels * production_feature_scale
+                        ),
+                        mean_width_pixels=(
+                            track.mean_width_pixels * production_feature_scale
+                        ),
+                        thickness_pixels=(
+                            track.thickness_pixels * production_feature_scale
+                        ),
+                    )
                 annotation = annotation_by_id[annotation_id]
                 label = categories[int(annotation["category_id"])]
                 rows.append(

@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from cloud_chamber.config import load_config
 from cloud_chamber.ml.contour_dataset import (
+    build_feature_csv,
     build_segmented_feature_csv,
     load_feature_csv,
 )
@@ -86,6 +87,14 @@ def parse_args() -> argparse.Namespace:
         "--output", type=Path, default=PROJECT_ROOT / "models" / "mlp_classifier.joblib"
     )
     parser.add_argument("--rebuild-features", action="store_true")
+    parser.add_argument(
+        "--rebuild-segmented-features",
+        action="store_true",
+        help=(
+            "Rebuild only automatic-segmentation feature CSVs while reusing "
+            "unchanged ground-truth feature CSVs."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -140,6 +149,30 @@ def load_or_build_features(
             allowed_labels=allowed_labels,
             roi_profile_name=roi_profile_name,
             merge_annotation_fragments=merge_annotation_fragments,
+            use_production_pipeline=True,
+        )
+    return load_feature_csv(feature_path, allowed_labels)
+
+
+def load_or_build_ground_truth_features(
+    annotation_path: Path,
+    feature_path: Path,
+    config: dict,
+    allowed_labels: set[str],
+    rebuild: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build one feature vector from each complete COCO particle mask."""
+    if rebuild or not feature_path.exists():
+        print(f"Building ground-truth features: {feature_path.name}")
+        build_feature_csv(
+            annotation_path,
+            feature_path,
+            config["enhancement"],
+            allowed_labels=allowed_labels,
+            target_size=(
+                int(config["spatial_scaling"]["processing_width"]),
+                int(config["spatial_scaling"]["processing_height"]),
+            ),
         )
     return load_feature_csv(feature_path, allowed_labels)
 
@@ -254,6 +287,9 @@ def main() -> int:
     seed = int(config["project"]["random_seed"])
     allowed_labels = set(config["classification"]["supported_classes"])
     args.feature_dir.mkdir(parents=True, exist_ok=True)
+    rebuild_segmented = (
+        args.rebuild_features or args.rebuild_segmented_features
+    )
 
     primary_annotations = args.primary_split_root / "annotations_coco.json"
     if not primary_annotations.is_file():
@@ -261,7 +297,11 @@ def main() -> int:
             f"Primary annotation file not found: {primary_annotations}"
         )
 
+    # Evaluation always uses one complete ground-truth particle per annotation.
+    # Training additionally sees the corresponding automatic-segmentation
+    # representation so deployment remains robust to realistic contour errors.
     split_tables = {}
+    hybrid_training_tables = {}
     class_counts = {}
     for split in SPLITS:
         external_annotations = args.split_root / split / "annotations_coco.json"
@@ -271,38 +311,65 @@ def main() -> int:
             )
         primary_filtered = primary_split_annotations(primary_annotations, split)
 
-        external_x, external_y = load_or_build_features(
+        external_segmented_x, external_segmented_y = load_or_build_features(
             external_annotations,
             args.feature_dir / f"{split}.csv",
             config,
             allowed_labels,
-            args.rebuild_features,
+            rebuild_segmented,
             "external_muller",
             True,
         )
-        primary_x, primary_y = load_or_build_features(
+        primary_segmented_x, primary_segmented_y = load_or_build_features(
             primary_filtered,
             args.feature_dir / f"primary_{split}.csv",
             config,
             allowed_labels,
-            args.rebuild_features,
+            rebuild_segmented,
             args.primary_roi_profile,
             True,
         )
-        matrix = np.concatenate((external_x, primary_x), axis=0)
-        labels = np.concatenate((external_y, primary_y), axis=0)
-        split_tables[split] = (matrix, labels)
+        ground_truth_dir = args.feature_dir / "ground_truth"
+        external_x, external_y = load_or_build_ground_truth_features(
+            external_annotations,
+            ground_truth_dir / f"external_{split}.csv",
+            config,
+            allowed_labels,
+            args.rebuild_features,
+        )
+        primary_x, primary_y = load_or_build_ground_truth_features(
+            primary_filtered,
+            ground_truth_dir / f"primary_{split}.csv",
+            config,
+            allowed_labels,
+            args.rebuild_features,
+        )
+        evaluation_x = np.concatenate((external_x, primary_x), axis=0)
+        evaluation_y = np.concatenate((external_y, primary_y), axis=0)
+        segmented_x = np.concatenate(
+            (external_segmented_x, primary_segmented_x), axis=0
+        )
+        segmented_y = np.concatenate(
+            (external_segmented_y, primary_segmented_y), axis=0
+        )
+        split_tables[split] = (evaluation_x, evaluation_y)
+        hybrid_training_tables[split] = (
+            np.concatenate((evaluation_x, segmented_x), axis=0),
+            np.concatenate((evaluation_y, segmented_y), axis=0),
+        )
         class_counts[split] = {
-            "external": dict(sorted(Counter(external_y).items())),
-            "primary": dict(sorted(Counter(primary_y).items())),
-            "combined": dict(sorted(Counter(labels).items())),
+            "ground_truth": dict(sorted(Counter(evaluation_y).items())),
+            "segmented_augmentation": dict(sorted(Counter(segmented_y).items())),
+            "hybrid_training": dict(
+                sorted(Counter(hybrid_training_tables[split][1]).items())
+            ),
         }
         print(
-            f"{split}: {len(labels)} combined tracks "
-            f"(external={len(external_y)}, primary={len(primary_y)})"
+            f"{split}: {len(evaluation_y)} standardised particles; "
+            f"{len(segmented_y)} segmented augmentations"
         )
 
-    development_x, development_y = split_tables["development"]
+    development_x, development_y = hybrid_training_tables["development"]
     validation_x, validation_y = split_tables["validation"]
     candidates = []
     best = None
@@ -345,8 +412,9 @@ def main() -> int:
     _, best_parameters, _, _, best_index = best
     # Hyperparameters are now fixed, so use all non-test labels for the final
     # fit. The held-out final-test split remains untouched until this point.
-    refit_x = np.concatenate((development_x, validation_x), axis=0)
-    refit_y = np.concatenate((development_y, validation_y), axis=0)
+    validation_train_x, validation_train_y = hybrid_training_tables["validation"]
+    refit_x = np.concatenate((development_x, validation_train_x), axis=0)
+    refit_y = np.concatenate((development_y, validation_train_y), axis=0)
     ensemble_members = []
     balancing_methods = []
     for member_seed in range(seed, seed + 5):
@@ -386,8 +454,9 @@ def main() -> int:
     report = {
         "method": "StandardScaler + MLPClassifier",
         "feature_source": (
-            "combined primary and external automatic segmentation contours "
-            "labelled by COCO-mask overlap"
+            "hybrid ground-truth particle masks and merged automatic "
+            "segmentation contours; validation and final-test use one "
+            "ground-truth record per annotation"
         ),
         "selection_metric": (
             "validation macro F1; balanced accuracy and accuracy tie-breakers"

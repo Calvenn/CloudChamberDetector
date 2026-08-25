@@ -30,6 +30,7 @@ def scale_pixel_parameters(
         "minimum_thin_perimeter",
         "minimum_thin_major_axis",
         "alignment_merge_gap",
+        "curved_merge_gap",
     ):
         if name in scaled:
             scaled[name] = max(1, int(round(float(scaled[name]) * ratio)))
@@ -262,6 +263,32 @@ def segment_tracks(
         found, _ = cv2.findContours(
             refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
         )
+    curved_alignment_links = 0
+    if (
+        bool(settings.get("curved_alignment_merge", False))
+        and len(found) > 1
+        and float(settings.get("curved_merge_gap", 0)) > 0
+    ):
+        refined, curved_alignment_links = _link_curved_contours(
+            refined,
+            found,
+            local_bright,
+            maximum_gap=float(settings["curved_merge_gap"]),
+            maximum_tangent_angle=float(
+                settings.get("curved_merge_tangent_angle", 50)
+            ),
+            minimum_aspect_ratio=float(
+                settings.get("curved_merge_minimum_aspect", 1.2)
+            ),
+            evidence_threshold=float(otsu_value + thin_line_threshold_offset),
+            minimum_evidence_fraction=float(
+                settings.get("curved_merge_minimum_bright_fraction", 0.15)
+            ),
+        )
+        refined = cv2.bitwise_and(refined, roi_mask)
+        found, _ = cv2.findContours(
+            refined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+        )
     minimum_area = float(settings["minimum_object_area"])
     minimum_major_axis = float(settings["minimum_major_axis"])
     minimum_thin_area = float(settings["minimum_thin_area"])
@@ -387,6 +414,7 @@ def segment_tracks(
             ),
             "prefilter_alignment_links_created": prefilter_alignment_links,
             "alignment_links_created": alignment_links,
+            "curved_alignment_links_created": curved_alignment_links,
             "opening_kernel": opening_size,
             "opening_applied": opening_applied,
             "minimum_area": minimum_area,
@@ -496,4 +524,170 @@ def _link_aligned_contours(
                 cv2.LINE_8,
             )
             link_count += 1
+    return linked, link_count
+
+
+def _skeleton_endpoint_descriptions(
+    contour: np.ndarray,
+) -> tuple[float, list[dict[str, object]]]:
+    """Return an aspect ratio and endpoint-local tangents for one contour."""
+    x, y, width, height = cv2.boundingRect(contour)
+    region = np.zeros((height + 4, width + 4), dtype=np.uint8)
+    shifted = contour - np.asarray([[[x - 2, y - 2]]], dtype=contour.dtype)
+    cv2.drawContours(region, [shifted], -1, 255, cv2.FILLED)
+    working = region.copy()
+    topology_scale = 1.0
+    maximum_dimension = max(working.shape, default=0)
+    if maximum_dimension > 256:
+        topology_scale = 256.0 / maximum_dimension
+        working = cv2.resize(
+            working,
+            (
+                max(1, int(round(working.shape[1] * topology_scale))),
+                max(1, int(round(working.shape[0] * topology_scale))),
+            ),
+            interpolation=cv2.INTER_NEAREST,
+        )
+    skeleton = np.zeros_like(working)
+    element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+    for _ in range(max(working.shape) + 1):
+        if not cv2.countNonZero(working):
+            break
+        eroded = cv2.erode(working, element)
+        opened = cv2.dilate(eroded, element)
+        skeleton = cv2.bitwise_or(skeleton, cv2.subtract(working, opened))
+        if np.array_equal(eroded, working):
+            skeleton = cv2.bitwise_or(skeleton, working)
+            break
+        working = eroded
+
+    foreground = (skeleton > 0).astype(np.uint8)
+    points_yx = np.column_stack(np.where(foreground > 0))
+    if len(points_yx) < 2:
+        return 0.0, []
+    neighbours = cv2.filter2D(
+        foreground, cv2.CV_16S, np.ones((3, 3), dtype=np.uint8)
+    ) - foreground
+    endpoints_yx = np.column_stack(
+        np.where((foreground > 0) & (neighbours == 1))
+    )
+    if len(endpoints_yx) < 2:
+        return 0.0, []
+
+    # Branching/noisy skeletons may have several endpoints. Retain the pair
+    # with greatest separation as the principal track ends.
+    pairs = [
+        (first, second)
+        for first in range(len(endpoints_yx))
+        for second in range(first + 1, len(endpoints_yx))
+    ]
+    first, second = max(
+        pairs,
+        key=lambda pair: float(
+            np.linalg.norm(endpoints_yx[pair[0]] - endpoints_yx[pair[1]])
+        ),
+    )
+    selected = (endpoints_yx[first], endpoints_yx[second])
+    (_, _), (side_a, side_b), _ = cv2.minAreaRect(contour)
+    minor = float(min(side_a, side_b))
+    aspect = float(max(side_a, side_b)) / minor if minor > 0 else 0.0
+    descriptions = []
+    local_radius = max(
+        3.0,
+        min(15.0, 0.25 * max(working.shape)),
+    )
+    points_xy = points_yx[:, ::-1].astype(np.float64)
+    for endpoint_yx in selected:
+        endpoint_xy = endpoint_yx[::-1].astype(np.float64)
+        distances = np.linalg.norm(points_xy - endpoint_xy, axis=1)
+        local = points_xy[distances <= local_radius]
+        if len(local) < 2:
+            continue
+        centred = local - np.mean(local, axis=0)
+        _, _, axes = np.linalg.svd(centred, full_matrices=False)
+        direction = axes[0]
+        angle = float(np.degrees(np.arctan2(direction[1], direction[0])) % 180.0)
+        descriptions.append(
+            {
+                "point": (
+                    endpoint_xy / topology_scale
+                    + np.asarray([x - 2, y - 2])
+                ),
+                "angle": angle,
+            }
+        )
+    return aspect, descriptions
+
+
+def _link_curved_contours(
+    mask: np.ndarray,
+    contours: list[np.ndarray],
+    evidence_image: np.ndarray,
+    maximum_gap: float,
+    maximum_tangent_angle: float,
+    minimum_aspect_ratio: float,
+    evidence_threshold: float,
+    minimum_evidence_fraction: float,
+) -> tuple[np.ndarray, int]:
+    """Join close curved fragments using skeleton endpoint tangents.
+
+    A link requires compatible local directions and faint bright pixels along
+    the proposed connector. Each endpoint is used at most once.
+    """
+    descriptions = [_skeleton_endpoint_descriptions(item) for item in contours]
+    candidates = []
+    for first_index, (first_aspect, first_ends) in enumerate(descriptions):
+        if first_aspect < minimum_aspect_ratio:
+            continue
+        for second_index in range(first_index + 1, len(descriptions)):
+            second_aspect, second_ends = descriptions[second_index]
+            if second_aspect < minimum_aspect_ratio:
+                continue
+            for first_end_index, first in enumerate(first_ends):
+                for second_end_index, second in enumerate(second_ends):
+                    connector = second["point"] - first["point"]
+                    distance = float(np.linalg.norm(connector))
+                    if distance == 0 or distance > maximum_gap:
+                        continue
+                    connector_angle = float(
+                        np.degrees(np.arctan2(connector[1], connector[0])) % 180.0
+                    )
+                    if (
+                        _angle_difference(connector_angle, float(first["angle"]))
+                        > maximum_tangent_angle
+                        or _angle_difference(connector_angle, float(second["angle"]))
+                        > maximum_tangent_angle
+                    ):
+                        continue
+                    line = np.zeros_like(mask)
+                    start = tuple(np.rint(first["point"]).astype(int))
+                    stop = tuple(np.rint(second["point"]).astype(int))
+                    cv2.line(line, start, stop, 255, 1, cv2.LINE_8)
+                    line_pixels = line > 0
+                    evidence_fraction = float(
+                        np.mean(evidence_image[line_pixels] >= evidence_threshold)
+                    )
+                    if evidence_fraction < minimum_evidence_fraction:
+                        continue
+                    candidates.append(
+                        (
+                            distance,
+                            first_index,
+                            first_end_index,
+                            second_index,
+                            second_end_index,
+                            start,
+                            stop,
+                        )
+                    )
+
+    linked = mask.copy()
+    used_endpoints: set[tuple[int, int]] = set()
+    link_count = 0
+    for _, first, first_end, second, second_end, start, stop in sorted(candidates):
+        if (first, first_end) in used_endpoints or (second, second_end) in used_endpoints:
+            continue
+        cv2.line(linked, start, stop, 255, 1, cv2.LINE_8)
+        used_endpoints.update(((first, first_end), (second, second_end)))
+        link_count += 1
     return linked, link_count

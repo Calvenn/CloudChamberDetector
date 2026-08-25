@@ -1,0 +1,137 @@
+{
+  "method": "Extra Trees particle-versus-artifact candidate filter",
+  "selected_candidate": 8,
+  "selected_parameters": {
+    "n_estimators": 500,
+    "max_depth": 20,
+    "min_samples_leaf": 3
+  },
+  "acceptance_threshold": 0.25,
+  "feature_columns": [
+    "area_pixels",
+    "perimeter_pixels",
+    "major_axis_pixels",
+    "mean_width_pixels",
+    "orientation_degrees",
+    "aspect_ratio",
+    "solidity",
+    "rectangularity",
+    "thickness_pixels",
+    "mean_intensity",
+    "intensity_stddev",
+    "circularity",
+    "convexity",
+    "perimeter_to_major_axis",
+    "orientation_sin_2x",
+    "orientation_cos_2x",
+    "contour_complexity",
+    "bbox_extent",
+    "skeleton_endpoints",
+    "skeleton_branch_ratio",
+    "border_distance_ratio",
+    "local_contrast"
+  ],
+  "class_counts": {
+    "development": {
+      "artifact": 5354,
+      "particle": 2691
+    },
+    "validation": {
+      "artifact": 1444,
+      "particle": 846
+    },
+    "final_test": {
+      "artifact": 1104,
+      "particle": 466
+    }
+  },
+  "validation": {
+    "sample_count": 2290,
+    "threshold": 0.25,
+    "particle_precision": 0.5575284090909091,
+    "particle_recall": 0.9278959810874704,
+    "particle_f2": 0.8190734557595993,
+    "confusion_matrix": [
+      [
+        821,
+        623
+      ],
+      [
+        61,
+        785
+      ]
+    ],
+    "classification_report": {
+      "artifact": {
+        "precision": 0.9308390022675737,
+        "recall": 0.5685595567867036,
+        "f1-score": 0.705932932072227,
+        "support": 1444.0
+      },
+      "particle": {
+        "precision": 0.5575284090909091,
+        "recall": 0.9278959810874704,
+        "f1-score": 0.6965394853593612,
+        "support": 846.0
+      },
+      "accuracy": 0.7013100436681222,
+      "macro avg": {
+        "precision": 0.7441837056792413,
+        "recall": 0.748227768937087,
+        "f1-score": 0.7012362087157941,
+        "support": 2290.0
+      },
+      "weighted avg": {
+        "precision": 0.7929260058363692,
+        "recall": 0.7013100436681222,
+        "f1-score": 0.7024626893128014,
+        "support": 2290.0
+      }
+    }
+  },
+  "final_test": {
+    "sample_count": 1570,
+    "threshold": 0.25,
+    "particle_precision": 0.4648033126293996,
+    "particle_recall": 0.9635193133047211,
+    "particle_f2": 0.7932862190812721,
+    "confusion_matrix": [
+      [
+        587,
+        517
+      ],
+      [
+        17,
+        449
+      ]
+    ],
+    "classification_report": {
+      "artifact": {
+        "precision": 0.9718543046357616,
+        "recall": 0.5317028985507246,
+        "f1-score": 0.6873536299765808,
+        "support": 1104.0
+      },
+      "particle": {
+        "precision": 0.4648033126293996,
+        "recall": 0.9635193133047211,
+        "f1-score": 0.6270949720670391,
+        "support": 466.0
+      },
+      "accuracy": 0.6598726114649681,
+      "macro avg": {
+        "precision": 0.7183288086325806,
+        "recall": 0.7476111059277228,
+        "f1-score": 0.65722430102181,
+        "support": 1570.0
+      },
+      "weighted avg": {
+        "precision": 0.8213538191103065,
+        "recall": 0.6598726114649681,
+        "f1-score": 0.6694679391575703,
+        "support": 1570.0
+      }
+    }
+  },
+  "model_path": "C:\\Coding\\CloudChamberDetector\\models\\artifact_filter.joblib"
+}
