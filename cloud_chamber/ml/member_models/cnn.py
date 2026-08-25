@@ -23,7 +23,7 @@ try:
     import torch
     import torch.nn as nn
     import torch.optim as optim
-    from torch.utils.data import ConcatDataset, DataLoader, Dataset
+    from torch.utils.data import DataLoader, Dataset
 except ImportError as exc:  # pragma: no cover - dependency check for the user flow.
     raise RuntimeError(
         "PyTorch is required for the CNN implementation. Install it with pip install torch."
@@ -35,10 +35,9 @@ from collections import Counter
 from cloud_chamber.ml.contour_dataset import annotation_to_mask
 
 CLASS_COLOURS = {
-    # OpenCV uses BGR, not RGB.
-    "alpha": (0, 255, 0),
-    "electron_positron": (255, 0, 0),
-    "proton": (0, 0, 255),
+    "alpha": (0, 165, 255),
+    "electron_positron": (255, 120, 0),
+    "proton": (0, 200, 0),
     "v_track": (255, 0, 255),
 }
 DISPLAY_NAMES = {
@@ -258,33 +257,6 @@ def evaluate_loader(model: nn.Module, loader: DataLoader, class_mapping: dict[st
     str_labels = [inv_mapping[int(l)] for l in all_labels]
     str_preds = [inv_mapping[int(p)] for p in all_preds]
     class_names = sorted(set(str_labels) | set(str_preds))
-    report = classification_report(
-        str_labels, str_preds, labels=class_names, output_dict=True, zero_division=0
-    )
-
-    # These are measured by the ground-truth class subset, matching the
-    # Extra Trees evidence report.  A classifier cannot know the predicted
-    # class until after it has responded, so "predicted-class time" would not
-    # be a meaningful measurement.
-    per_class_time = {}
-    for class_name, class_index in class_mapping.items():
-        class_patches = [
-            _patch_tensor(loader.dataset.patches[index])
-            for index, sample in enumerate(loader.dataset.samples)
-            if sample.label == class_index
-        ]
-        if not class_patches:
-            continue
-        started = perf_counter()
-        with torch.no_grad():
-            for start in range(0, len(class_patches), loader.batch_size or len(class_patches)):
-                model(torch.stack(class_patches[start : start + (loader.batch_size or len(class_patches))]))
-        per_class_time[class_name] = (
-            (perf_counter() - started) * 1000.0 / len(class_patches)
-        )
-        # Recall is the class-specific proportion correctly recognised, so it
-        # is also reported explicitly as class-specific accuracy for the table.
-        report[class_name]["class_accuracy"] = report[class_name]["recall"]
     
     return {
         "sample_count": int(len(all_labels)),
@@ -295,9 +267,9 @@ def evaluate_loader(model: nn.Module, loader: DataLoader, class_mapping: dict[st
         "mean_inference_ms_per_track": elapsed_ms / max(len(all_labels), 1),
         "class_names": class_names,
         "confusion_matrix": confusion_matrix(str_labels, str_preds, labels=class_names).tolist(),
-        "classification_report": report,
-        "class_accuracy_definition": "Class-specific accuracy equals recall: correct predictions / actual samples of that class.",
-        "mean_inference_ms_per_track_by_true_class": per_class_time,
+        "classification_report": classification_report(
+            str_labels, str_preds, labels=class_names, output_dict=True, zero_division=0
+        ),
     }
 
 def train_cnn(
@@ -390,54 +362,19 @@ def train_cnn(
         model.load_state_dict(best_state)
 
     validation_metrics = evaluate_loader(model, val_loader, class_mapping)
-
-    # Once validation has selected the training setup, refit a fresh final
-    # model on every non-test patch.  The final-test split remains untouched.
-    torch.manual_seed(random_seed)
-    final_model = TrackPatchCNN(input_dim=PATCH_SIZE, num_classes=len(class_mapping))
-    final_optimizer = optim.Adam(final_model.parameters(), lr=learning_rate)
-    refit_dataset = ConcatDataset((train_loader.dataset, val_loader.dataset))
-    refit_loader = DataLoader(
-        refit_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        generator=torch.Generator().manual_seed(random_seed),
-    )
-    refit_labels = torch.cat((
-        development_labels,
-        torch.tensor([sample.label for sample in val_loader.dataset.samples], dtype=torch.long),
-    ))
-    refit_counts = torch.bincount(refit_labels, minlength=len(class_mapping)).float()
-    refit_weights = refit_counts.sum() / (len(class_mapping) * refit_counts)
-    refit_criterion = nn.CrossEntropyLoss(weight=refit_weights)
-    final_history = {"train_loss": []}
-    for _ in range(epochs):
-        final_model.train()
-        epoch_loss = 0.0
-        for features, labels in refit_loader:
-            final_optimizer.zero_grad()
-            logits = final_model(features)
-            loss = refit_criterion(logits, labels)
-            loss.backward()
-            final_optimizer.step()
-            epoch_loss += loss.item() * features.size(0)
-        final_history["train_loss"].append(epoch_loss / len(refit_dataset))
-
-    final_test_metrics = evaluate_loader(final_model, test_loader, class_mapping)
+    final_test_metrics = evaluate_loader(model, test_loader, class_mapping)
 
     return {
-        "model": final_model,
+        "model": model,
         "class_mapping": class_mapping,
         "history": history,
         "dataset_root": str(Path(dataset_root)),
         "primary_dataset_root": str(Path(primary_dataset_root)),
         "class_counts": class_counts,
         "class_weights": class_weights.tolist(),
-        "final_fit_class_weights": refit_weights.tolist(),
         "random_seed": random_seed,
         "validation_metrics": validation_metrics,
         "final_test_metrics": final_test_metrics,
-        "final_history": final_history,
     }
 
 def load_model(model_path: str | Path) -> dict:
@@ -648,9 +585,7 @@ def main() -> int:
         "class_mapping": result["class_mapping"],
         "classes": list(result["class_mapping"].keys()),
         "history": result["history"],
-        "final_history": result["final_history"],
         "class_weights": result["class_weights"],
-        "final_fit_class_weights": result["final_fit_class_weights"],
         "random_seed": result["random_seed"],
         "input_kind": "track_image_patch",
         "patch_size": PATCH_SIZE,
@@ -663,7 +598,6 @@ def main() -> int:
             "particle is cropped from its source image and resized"
         ),
         "selection_metric": "validation macro F1; balanced accuracy tie-breaker",
-        "final_fit_source": "development + validation after validation-based selection",
         "input": "masked greyscale particle-track patches resized to 128x128",
         "class_counts": result["class_counts"],
         "classes": list(result["class_mapping"].keys()),
