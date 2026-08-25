@@ -96,7 +96,7 @@ def _build_page_handlers():
         "SVM": lambda _config: svm_page.render(context),
         "Decision Tree": lambda _config: decision_tree_page.render(context),
         "MLP": lambda config: mlp_page.render(config, context),
-        "Extra Trees": lambda _config: extra_trees_page.render(context),
+        "Extremely Randomized Trees": lambda _config: extra_trees_page.render(context),
         COMPARISON_PAGE: lambda _config: render_comparison_page(),
     }
 
@@ -1995,7 +1995,7 @@ def _extra_trees_page() -> None:
     report_path = (
         project_root
         / "models"
-        / "extra_trees_training_report.json"
+        / "extra_trees_hybrid_training_report.json"
     )
 
 
@@ -2842,7 +2842,7 @@ def _comparison_page() -> None:
         "SVM": "svm_training_report.json",
         "Decision Tree": "decision_tree_training_report.json",
         "MLP": "mlp_training_report.json",
-        "Extremely Randomized Trees": "extra_trees_training_report.json",
+        "Extremely Randomized Trees": "extra_trees_hybrid_training_report.json",
     }
     available_reports = {}
     unavailable_models = []

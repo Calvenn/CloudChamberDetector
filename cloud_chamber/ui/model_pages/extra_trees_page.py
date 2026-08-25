@@ -44,7 +44,7 @@ def render(config: dict, context: PageContext) -> None:
     report_path = (
         project_root
         / "models"
-        / "extra_trees_training_report.json"
+        / "extra_trees_hybrid_training_report.json"
     )
 
 

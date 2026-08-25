@@ -155,7 +155,7 @@ def main() -> int:
         "segmented_final_test": segmented_final,
         "model_path": str(output),
     }
-    report_path = PROJECT_ROOT / "models" / "extra_trees_training_report.json"
+    report_path = PROJECT_ROOT / "models" / "extra_trees_hybrid_training_report.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Saved candidate: {output}")
     print(f"Saved report: {report_path}")
