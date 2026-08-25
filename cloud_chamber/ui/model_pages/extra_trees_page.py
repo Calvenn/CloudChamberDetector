@@ -44,7 +44,7 @@ def render(config: dict, context: PageContext) -> None:
     report_path = (
         project_root
         / "models"
-        / "extra_trees_training_report.json"
+        / "extra_trees_hybrid_training_report.json"
     )
 
 
@@ -452,15 +452,12 @@ size of 1.
     features = result["features"]
     predictions = st.session_state.get("extra_trees_predictions")
 
-    prediction_signature = st.session_state.get(
-        "extra_trees_prediction_signature"
-    )
-    if predictions is not None and (
-        prediction_signature != feature_signature
-        or len(predictions) != len(features)
-    ):
+    # The shared pipeline clears cached predictions whenever segmentation is
+    # recalculated. Batch entries also keep their own matching result and
+    # predictions. Guard against an inconsistent cache without relying on the
+    # abandoned feature-signature state, which was never populated.
+    if predictions is not None and len(predictions) != len(features):
         st.session_state["extra_trees_predictions"] = None
-        st.session_state["extra_trees_prediction_signature"] = None
         predictions = None
         st.info(
             "The image or segmentation tracks changed. Click "
