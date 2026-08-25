@@ -9,4 +9,3 @@ data/frames/*
 !data/frames/.gitkeep
 tmp/*
 .agents/
-data/features/
