@@ -15,7 +15,7 @@ REPORTS = {
     "SVM": Path("models/svm_training_report.json"),
     "Decision Tree": Path("models/decision_tree_training_report.json"),
     "MLP": Path("models/mlp_training_report.json"),
-    "Extra Trees": Path("models/extra_trees_training_report.json"),
+    "Extremely Randomized Trees": Path("models/extra_trees_training_report.json"),
 }
 
 DISPLAY_NAMES = {

@@ -1,4 +1,4 @@
-"""Train an Extra Trees candidate on ground-truth + segmented features."""
+"""Train Extremely Randomized Trees on ground-truth + segmented features."""
 
 from __future__ import annotations
 
@@ -115,7 +115,7 @@ def main() -> int:
 
     standardised_final = _metrics(model, *gt["final_test"])
     segmented_final = _metrics(model, *segmented["final_test"])
-    output = PROJECT_ROOT / "models" / "extra_trees_hybrid_candidate.joblib"
+    output = PROJECT_ROOT / "models" / "extra_trees_classifier.joblib"
     bundle = {
         "model": model,
         "feature_columns": FEATURE_COLUMNS,
@@ -129,7 +129,7 @@ def main() -> int:
     }
     joblib.dump(bundle, output)
     report = {
-        "method": "Hybrid ExtraTreesClassifier",
+        "method": "ExtraTreesClassifier",
         "selection_metric": "validation macro F1; balanced accuracy and accuracy tie-breakers",
         "feature_columns": FEATURE_COLUMNS,
         "training_class_counts": dict(sorted(Counter(refit_y.tolist()).items())),
@@ -148,7 +148,7 @@ def main() -> int:
         "segmented_final_test": segmented_final,
         "model_path": str(output),
     }
-    report_path = PROJECT_ROOT / "models" / "extra_trees_hybrid_training_report.json"
+    report_path = PROJECT_ROOT / "models" / "extra_trees_training_report.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Saved candidate: {output}")
     print(f"Saved report: {report_path}")

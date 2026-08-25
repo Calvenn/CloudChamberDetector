@@ -107,7 +107,7 @@ def _build_page_handlers():
         "MLP": lambda config: mlp_page.render(
             "MLP", MODEL_PAGES["MLP"], config, context
         ),
-        "Extra Trees": lambda _config: extra_trees_page.render(context),
+        "Extremely Randomized Trees": lambda config: extra_trees_page.render(config, context),
         COMPARISON_PAGE: lambda _config: render_comparison_page(),
     }
 
@@ -120,6 +120,8 @@ def _initialise_state() -> None:
     st.session_state.setdefault("selected_input_index", 0)
     st.session_state.setdefault("source_description", None)
     st.session_state.setdefault("pipeline_result", None)
+    st.session_state.setdefault("pipeline_results_by_input", {})
+    st.session_state.setdefault("input_source_type", "Image")
     st.session_state.setdefault("mlp_predictions", None)
     st.session_state.setdefault("cnn_predictions", None)
     st.session_state.setdefault("svm_predictions", None)
@@ -200,6 +202,9 @@ def _shared_pipeline_page(config: dict) -> None:
     )
 
     st.session_state["pipeline_result"] = result
+    st.session_state["pipeline_results_by_input"][
+        st.session_state["input_name"]
+    ] = result
     # A changed image or segmentation produces different track IDs/features.
     # Never display predictions cached for the previous pipeline result.
     st.session_state["mlp_predictions"] = None
@@ -1069,6 +1074,7 @@ def _acquisition_section(config: dict) -> None:
     without uploading the files again.
     """
     source_type = st.radio("Input type", ["Image", "Video"], horizontal=True)
+    st.session_state["input_source_type"] = source_type
     if source_type == "Image":
         uploads = st.file_uploader(
             "Upload one or more raw cloud-chamber images",
@@ -1216,7 +1222,7 @@ def _model_page(short_name: str, full_name: str) -> None:
         return
 
     module_name = short_name.lower().replace(" ", "_")
-    if short_name == "Extra Trees":
+    if short_name == "Extremely Randomized Trees":
         module_name = "extra_trees"
     st.code(f"cloud_chamber/ml/member_models/{module_name}.py")
     st.markdown(
@@ -1267,6 +1273,7 @@ def _replace_input_batch(samples: list[dict]) -> None:
     st.session_state["batch_reports"] = {}
     st.session_state["extra_trees_batch_results"] = {}
     st.session_state["extra_trees_batch_reports"] = {}
+    st.session_state["pipeline_results_by_input"] = {}
     if samples:
         first = samples[0]
         _set_input(first["image"], first["name"], first["description"])
@@ -1742,16 +1749,16 @@ def _render_batch_summary() -> None:
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 def _extra_trees_page() -> None:
-    """Beginner-friendly Extra Trees classification page."""
+    """Beginner-friendly Extremely Randomized Trees classification page."""
 
     # =====================================================
     # PAGE TITLE
     # =====================================================
 
-    st.title("Extra Trees Classifier")
+    st.title("Extremely Randomized Trees Classifier")
 
     st.write(
-        "Extra Trees analyses the detected particle tracks and predicts the "
+        "Extremely Randomized Trees analyses the detected particle tracks and predicts the "
         "particle type for each track."
     )
 
@@ -1777,7 +1784,7 @@ def _extra_trees_page() -> None:
     if not model_path.exists():
 
         st.warning(
-            "Extra Trees has not been trained yet."
+            "Extremely Randomized Trees has not been trained yet."
         )
 
         st.code(
@@ -1844,7 +1851,7 @@ def _extra_trees_page() -> None:
 
 
         st.caption(
-            "Validation Macro F1 was used to select the Extra Trees "
+            "Validation Macro F1 was used to select the Extremely Randomized Trees "
             "configuration. Final-test results measure performance on unseen "
             "test data."
         )
@@ -1854,7 +1861,7 @@ def _extra_trees_page() -> None:
         # saved report records one overall mean inference time rather than a
         # separate timing measurement for every class.
         with st.expander("View report-ready final-test tables", expanded=True):
-            st.subheader("Extreme Random Tree - Model Configuration")
+            st.subheader("Extremely Randomized Trees - Model Configuration")
             macro_result = final_test["classification_report"]["macro avg"]
             model_configuration = (
                 f"{selected_candidate.get('n_estimators', '-')} trees, "
@@ -1866,7 +1873,7 @@ def _extra_trees_page() -> None:
                 f"class weight = "
                 f"{selected_candidate.get('class_weight', '-')}"
                 if selected_candidate
-                else "Selected Extra Trees configuration"
+                else "Selected Extremely Randomized Trees configuration"
             )
             processing_time = float(
                 final_test.get("mean_inference_ms_per_track", 0.0)
@@ -1885,7 +1892,7 @@ def _extra_trees_page() -> None:
             )
             st.dataframe(model_table, use_container_width=True, hide_index=True)
 
-            st.subheader("Extreme Random Tree - Per-Class Performance")
+            st.subheader("Extremely Randomized Trees - Per-Class Performance")
             confusion = np.asarray(final_test["confusion_matrix"], dtype=np.int64)
             total_samples = int(confusion.sum())
             class_table = []
@@ -1942,7 +1949,7 @@ def _extra_trees_page() -> None:
             "View model training details"
         ):
             st.info(
-                "Beginner summary: several Extra Trees settings were tested. "
+                "Beginner summary: several Extremely Randomized Trees settings were tested. "
                 "The application kept the setting that classified all particle "
                 "types most consistently on validation data."
             )
@@ -2079,7 +2086,7 @@ def _extra_trees_page() -> None:
     model_classes = tuple(str(value) for value in model_bundle["classes"])
     if set(model_classes) != set(supported_classes):
         st.warning(
-            "The trained Extra Trees classes do not match the configured "
+            "The trained Extremely Randomized Trees classes do not match the configured "
             "supported classes. Results below retain the trained model's "
             "classes; retrain only after confirming the intended taxonomy."
         )
@@ -2111,7 +2118,7 @@ def _extra_trees_page() -> None:
 
     if st.button(button_label, type="primary", key="btn_classify_extra_trees"):
         batch_results = {}
-        progress = st.progress(0.0, text="Processing batch with Extra Trees...")
+        progress = st.progress(0.0, text="Processing batch with Extremely Randomized Trees...")
         for index, sample in enumerate(samples):
             sample_result = _process_pipeline_image(sample["image"], config)
             sample_predictions = predict_extra_trees_tracks(
@@ -2283,14 +2290,14 @@ def _extra_trees_page() -> None:
         "summary": summary,
         "tracks": track_reports,
         "interpretation_note": (
-            "Extra Trees confidence estimates class preference. Contour quality is "
+            "Extremely Randomized Trees confidence estimates class preference. Contour quality is "
             "an explainable heuristic and is not a correctness probability."
         ),
         "field_guide": [
             {
                 "field": "Prediction and confidence",
                 "description": (
-                    "Prediction is the particle class preferred by Extra Trees. "
+                    "Prediction is the particle class preferred by Extremely Randomized Trees. "
                     "Confidence is the model probability for that class, not a "
                     "guarantee that the prediction is correct."
                 ),
@@ -2329,7 +2336,7 @@ def _extra_trees_page() -> None:
                 "field": "Decision drivers",
                 "description": (
                     "Lists the contour measurements that contributed most "
-                    "strongly to the Extra Trees decision for that track."
+                    "strongly to the Extremely Randomized Trees decision for that track."
                 ),
             },
         ],
@@ -2405,7 +2412,7 @@ def _extra_trees_page() -> None:
     st.dataframe(simplified_rows, use_container_width=True, hide_index=True)
     st.info(
         "How to read the results: Prediction is the particle type selected by "
-        "Extra Trees. Confidence shows how strongly the model prefers that "
+        "Extremely Randomized Trees. Confidence shows how strongly the model prefers that "
         "prediction. Tracks marked Uncertain or Review segmentation should be "
         "checked manually."
     )
@@ -2507,7 +2514,7 @@ def _extra_trees_page() -> None:
             final_test = training_report["final_test"]
             st.caption(
                 "Rows represent the correct particle classes. "
-                "Columns represent the Extra Trees predictions."
+                "Columns represent the Extremely Randomized Trees predictions."
             )
             st.write("Class order:", final_test["class_names"])
             cm_df = pd.DataFrame(
@@ -2536,7 +2543,7 @@ def _extra_trees_page() -> None:
 
 
 def _render_extra_trees_batch_summary() -> None:
-    """Show accumulated image/frame Extra Trees results from the current GUI session."""
+    """Show accumulated image/frame Extremely Randomized Trees results from the current GUI session."""
     rows = list(st.session_state.get("extra_trees_batch_reports", {}).values())
     if not rows:
         return
@@ -2613,7 +2620,7 @@ def _comparison_page() -> None:
         "SVM": "svm_training_report.json",
         "Decision Tree": "decision_tree_training_report.json",
         "MLP": "mlp_training_report.json",
-        "Extra Trees": "extra_trees_training_report.json",
+        "Extremely Randomized Trees": "extra_trees_training_report.json",
     }
     available_reports = {}
     unavailable_models = []

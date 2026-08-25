@@ -16,7 +16,7 @@ MODEL_PAGES = {
     "SVM": "Support Vector Machine",
     "Decision Tree": "Decision Tree",
     "MLP": "Multilayer Perceptron",
-    "Extra Trees": "Extremely Randomised Trees",
+    "Extremely Randomized Trees": "Extremely Randomized Trees",
 }
 
 SHARED_PIPELINE_PAGE = "Shared Processing Pipeline"
