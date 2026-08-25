@@ -111,6 +111,7 @@ def _initialise_state() -> None:
     st.session_state.setdefault("selected_input_index", 0)
     st.session_state.setdefault("source_description", None)
     st.session_state.setdefault("pipeline_result", None)
+    st.session_state.setdefault("pipeline_result_signature", None)
     st.session_state.setdefault("pipeline_results_by_input", {})
     st.session_state.setdefault("input_source_type", "Image")
     st.session_state.setdefault("shared_segmentation_results", {})
@@ -195,30 +196,38 @@ def _shared_pipeline_page(config: dict) -> None:
         caption="Contour detection and filtering",
     )
 
+    current_signature = (
+        st.session_state.get("input_name"),
+        _pipeline_result_signature(result),
+    )
+    pipeline_changed = (
+        st.session_state.get("pipeline_result_signature") != current_signature
+    )
     st.session_state["pipeline_result"] = result
+    st.session_state["pipeline_result_signature"] = current_signature
     st.session_state["pipeline_results_by_input"][
         st.session_state["input_name"]
     ] = result
-    # A changed image or segmentation produces different track IDs/features.
-    # Never display predictions cached for the previous pipeline result.
-    st.session_state["mlp_predictions"] = None
-    st.session_state["cnn_predictions"] = None
-    st.session_state["mlp_quality"] = None
-    st.session_state["decision_tree_predictions"] = None
-    st.session_state["decision_tree_quality"] = None
-    st.session_state["svm_predictions"] = None
-    st.session_state["svm_quality"] = None
-    st.session_state["extra_trees_predictions"] = None
-    st.session_state["extra_trees_prediction_signature"] = None
-    # Batch classifier pages cache their own pipeline outputs. Clear them as
-    # well, otherwise they can display contours from an older segmentation run.
-    st.session_state["mlp_batch_results"] = {}
-    st.session_state["decision_tree_batch_results"] = {}
-    st.session_state["svm_batch_results"] = {}
-    st.session_state["extra_trees_batch_results"] = {}
-    st.session_state["batch_reports"].pop(
-        st.session_state.get("input_name"), None
-    )
+    if pipeline_changed:
+        # Invalidate classification only when the effective segmentation or
+        # extracted features change. Navigation back to this page recomputes
+        # an identical result and must preserve the existing model values.
+        st.session_state["mlp_predictions"] = None
+        st.session_state["cnn_predictions"] = None
+        st.session_state["mlp_quality"] = None
+        st.session_state["decision_tree_predictions"] = None
+        st.session_state["decision_tree_quality"] = None
+        st.session_state["svm_predictions"] = None
+        st.session_state["svm_quality"] = None
+        st.session_state["extra_trees_predictions"] = None
+        st.session_state["extra_trees_prediction_signature"] = None
+        st.session_state["mlp_batch_results"] = {}
+        st.session_state["decision_tree_batch_results"] = {}
+        st.session_state["svm_batch_results"] = {}
+        st.session_state["extra_trees_batch_results"] = {}
+        st.session_state["batch_reports"].pop(
+            st.session_state.get("input_name"), None
+        )
 
     overlay = _colour_instance_mask(
         image, result["original_segmentation_mask"], opacity=0.52
@@ -3113,11 +3122,24 @@ def _draw_track_ids(
     return output
 
 
+def _pipeline_result_signature(result: dict) -> str:
+    """Identify the segmentation and feature records used by classifiers."""
+    digest = hashlib.sha1()
+    mask = np.ascontiguousarray(result["original_segmentation_mask"])
+    digest.update(str(mask.shape).encode("ascii"))
+    digest.update(mask.dtype.str.encode("ascii"))
+    digest.update(mask.tobytes())
+    for feature in result.get("features", []):
+        digest.update(repr(feature).encode("utf-8"))
+    return digest.hexdigest()
+
+
 def _set_input(image: np.ndarray, name: str, description: str) -> None:
     st.session_state["input_image"] = image
     st.session_state["input_name"] = name
     st.session_state["source_description"] = description
     st.session_state["pipeline_result"] = None
+    st.session_state["pipeline_result_signature"] = None
     st.session_state["mlp_predictions"] = None
     st.session_state["mlp_quality"] = None
     st.session_state["extra_trees_quality"] = None
