@@ -26,6 +26,12 @@ class UiContractTests(unittest.TestCase):
         self.assertIs(received_config, config)
         self.assertIsInstance(received_context, PageContext)
 
+    def test_extra_trees_page_has_no_unbound_feature_signature(self):
+        source = Path(
+            "cloud_chamber/ui/model_pages/extra_trees_page.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("feature_signature", source)
+
 
 if __name__ == "__main__":
     unittest.main()
