@@ -193,7 +193,7 @@ def render(context: PageContext) -> None:
     if not batch_results:
         st.info("No batch results. Process images first using the Classify button.")
         return
-    
+
     # ===== SECTION 1: SEARCH & FILTER =====
     st.divider()
     st.subheader("1. Search & Filter Images")

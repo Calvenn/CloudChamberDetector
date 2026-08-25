@@ -7,6 +7,6 @@ results/*
 !results/.gitkeep
 data/frames/*
 !data/frames/.gitkeep
+data/features/
 tmp/*
 .agents/
-data/features/

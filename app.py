@@ -10,7 +10,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import pandas as pd
 import streamlit as st
 from PIL import Image
 
@@ -31,15 +30,6 @@ from cloud_chamber.ml.artifact_filter import (
     filter_mask as filter_artifact_candidates,
     load_model as load_artifact_filter,
 )
-from cloud_chamber.ml.member_models.extra_trees import (
-    EXTRA_TREES_CLASS_COLOURS,
-    build_visual_report as build_extra_trees_visual_report,
-    encode_report_csv as encode_extra_trees_report_csv,
-    encode_report_png as encode_extra_trees_report_png,
-    load_model as load_extra_trees_model,
-    predict_tracks as predict_extra_trees_tracks,
-    summarise_predictions as summarise_extra_trees_predictions
-)
 from cloud_chamber.models import EnhancementResult, SegmentationResult
 from cloud_chamber.segmentation import scale_pixel_parameters, segment_tracks
 from cloud_chamber.tiling import (
@@ -50,6 +40,7 @@ from cloud_chamber.tiling import (
     merge_tile_masks,
     spatial_scale_tile,
 )
+from cloud_chamber.video_processing import temporal_track_composite
 from cloud_chamber.ui.navigation import (
     COMPARISON_PAGE,
     MODEL_PAGES,
@@ -58,6 +49,7 @@ from cloud_chamber.ui.navigation import (
     render_selected_page,
 )
 from cloud_chamber.ui.model_pages import (
+    cnn_page,
     decision_tree_page,
     extra_trees_page,
     mlp_page,
@@ -65,7 +57,6 @@ from cloud_chamber.ui.model_pages import (
 )
 from cloud_chamber.ui.model_pages.context import PageContext
 from cloud_chamber.ui.comparison_page import render as render_comparison_page
-from ui.cnn_page import render_cnn_page
 
 ROI_PROFILE_LABELS = {
     "Auto-detect from image shape (recommended)": "auto",
@@ -101,13 +92,11 @@ def _build_page_handlers():
     )
     return {
         SHARED_PIPELINE_PAGE: _shared_pipeline_page,
-        "CNN": lambda config: render_cnn_page(config, context),
+        "CNN": lambda config: cnn_page.render(config, context),
         "SVM": lambda _config: svm_page.render(context),
         "Decision Tree": lambda _config: decision_tree_page.render(context),
-        "MLP": lambda config: mlp_page.render(
-            "MLP", MODEL_PAGES["MLP"], config, context
-        ),
-        "Extremely Randomized Trees": lambda config: extra_trees_page.render(config, context),
+        "MLP": lambda config: mlp_page.render(config, context),
+        "Extra Trees": lambda _config: extra_trees_page.render(context),
         COMPARISON_PAGE: lambda _config: render_comparison_page(),
     }
 
@@ -122,10 +111,13 @@ def _initialise_state() -> None:
     st.session_state.setdefault("pipeline_result", None)
     st.session_state.setdefault("pipeline_results_by_input", {})
     st.session_state.setdefault("input_source_type", "Image")
+    st.session_state.setdefault("shared_segmentation_results", {})
+    st.session_state.setdefault("image_upload_signature", None)
     st.session_state.setdefault("mlp_predictions", None)
     st.session_state.setdefault("cnn_predictions", None)
     st.session_state.setdefault("svm_predictions", None)
     st.session_state.setdefault("extra_trees_predictions", None)
+    st.session_state.setdefault("extra_trees_prediction_signature", None)
     st.session_state.setdefault("decision_tree_predictions", None)
     st.session_state.setdefault(
         "layout_choice", "Auto-detect from image shape (recommended)"
@@ -191,7 +183,7 @@ def _shared_pipeline_page(config: dict) -> None:
         intermediate["local_bright_tracks"],
         caption="Morphological Operation: White top-hat",
     )
-    columns[1].image(intermediate["threshold"], caption="Otsu thresholding")
+    columns[1].image(intermediate["threshold"], caption="Otsu + hysteresis thresholding")
     columns[2].image(
         intermediate["morphological_closing"],
         caption="Morphological operation: Closing",
@@ -215,6 +207,7 @@ def _shared_pipeline_page(config: dict) -> None:
     st.session_state["svm_predictions"] = None
     st.session_state["svm_quality"] = None
     st.session_state["extra_trees_predictions"] = None
+    st.session_state["extra_trees_prediction_signature"] = None
     # Batch classifier pages cache their own pipeline outputs. Clear them as
     # well, otherwise they can display contours from an older segmentation run.
     st.session_state["mlp_batch_results"] = {}
@@ -228,25 +221,48 @@ def _shared_pipeline_page(config: dict) -> None:
     overlay = _colour_instance_mask(
         image, result["original_segmentation_mask"], opacity=0.52
     )
-    st.image(
-        _bgr_to_rgb(overlay),
-        caption=(
-            "Final instance segmentation: each continuous coloured region is "
-            "one detected particle track"
-        ),
+    overlay = _draw_track_ids(
+        overlay,
+        features,
+        result.get("original_bounding_boxes"),
     )
-    st.caption(
-        f"Segmented particle instances: {len(features)}. The classification "
-        "page must report the same count for this pipeline run."
-    )
+    _render_batch_segmentation_summary(config, result)
 
     st.header("Contour-based feature extraction")
-    rows = [
-        _feature_row(item, result["centimetres_per_pixel"])
-        for item in features
-    ]
-    if rows:
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+    if features:
+        st.subheader("Basic features")
+        st.dataframe(
+            [_basic_feature_row(item) for item in features],
+            use_container_width=True,
+            hide_index=True,
+        )
+        with st.expander("Show advanced features and measurement definitions"):
+            st.dataframe(
+                [_advanced_feature_row(item) for item in features],
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.markdown(
+                """
+- **Area** is the number of pixels inside the contour.
+- **Length** is the contour's major-axis length; **mean width** estimates its average thickness.
+- **Aspect ratio** compares length with minor-axis width.
+- **Solidity** compares contour area with its convex hull, while **rectangularity** compares it with its oriented rectangle.
+- **Circularity** is high for compact round regions and low for elongated tracks.
+- **Convexity** compares convex-hull perimeter with contour perimeter.
+- **Orientation sine/cosine** encode direction without treating opposite ends of the same axis as different track directions.
+"""
+            )
+        if result["centimetres_per_pixel"] is not None:
+            with st.expander("Show calibrated physical measurements"):
+                st.dataframe(
+                    [
+                        _feature_row(item, result["centimetres_per_pixel"])
+                        for item in features
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
     else:
         st.warning("No contour passed the configured minimum-area filter.")
 
@@ -403,7 +419,7 @@ def _roi_selection_section(image: np.ndarray, config: dict) -> dict | None:
 
 def _rectification_section(image: np.ndarray, roi_settings: dict) -> dict:
     """Collect perspective-correction points relative to the extracted ROI."""
-    st.header("Perspective rectification")
+    st.header("Rectification")
     target_size = tuple(int(value) for value in roi_settings["processing_size"])
     selected_roi, coordinates = extract_roi(
         image, roi_settings["roi_coordinates"], target_size
@@ -756,7 +772,7 @@ def _process_pipeline_image(
     }
 def _automatic_rectification_section(image: np.ndarray) -> dict:
     """Estimate and allow correction of full-image perspective coordinates."""
-    st.header("Perspective rectification")
+    st.header("Rectification")
     height, width = image.shape[:2]
     source_key = _roi_source_key(image)
     detected = detect_chamber_corners(image)
@@ -1084,9 +1100,14 @@ def _acquisition_section(config: dict) -> None:
         if uploads:
             samples = []
             failures = []
+            upload_signature = []
             for upload in uploads:
                 try:
-                    image = _decode_uploaded_image(upload.getvalue())
+                    payload = upload.getvalue()
+                    upload_signature.append(
+                        (upload.name, len(payload), hashlib.sha1(payload).hexdigest())
+                    )
+                    image = _decode_uploaded_image(payload)
                     samples.append(
                         {
                             "image": image,
@@ -1098,14 +1119,17 @@ def _acquisition_section(config: dict) -> None:
                     failures.append(upload.name)
 
             if samples:
-                _replace_input_batch(samples)
-                st.session_state["input_images"] = [
-                    (sample["image"], sample["name"]) for sample in samples
-                ]
-                st.session_state["selected_input_index"] = 0
-                st.success(
-                    f"Loaded {len(samples)} image(s). Choose one from the selector below."
-                )
+                signature = tuple(upload_signature)
+                if signature != st.session_state.get("image_upload_signature"):
+                    _replace_input_batch(samples)
+                    st.session_state["image_upload_signature"] = signature
+                    st.session_state["input_images"] = [
+                        (sample["image"], sample["name"]) for sample in samples
+                    ]
+                    st.session_state["selected_input_index"] = 0
+                    st.success(
+                        f"Loaded {len(samples)} image(s). Choose one from the selector below."
+                    )
             if failures:
                 st.warning("Unreadable files skipped: " + ", ".join(failures))
 
@@ -1147,18 +1171,73 @@ def _video_acquisition(upload, config: dict) -> None:
             f"{frame_count:,} frames | {fps:.2f} fps | {duration:.2f} seconds"
         )
 
+        st.markdown("**Video track enhancement**")
+        temporal_enabled = st.checkbox(
+            "Combine neighbouring frames to strengthen faint tracks",
+            value=True,
+            help=(
+                "Uses a temporal median to suppress stationary chamber texture "
+                "and boosts bright changes across a short frame window."
+            ),
+        )
+        temporal_controls = st.columns(3)
+        temporal_window = temporal_controls[0].slider(
+            "Temporal window", 3, 15, 7, step=2,
+            disabled=not temporal_enabled,
+            help="More frames reveal longer-lived tracks but may combine separate events.",
+        )
+        temporal_gain = temporal_controls[1].slider(
+            "Track evidence gain", 0.5, 4.0, 2.0, step=0.25,
+            disabled=not temporal_enabled,
+        )
+        stabilise_video = temporal_controls[2].checkbox(
+            "Stabilise camera movement", value=False,
+            disabled=not temporal_enabled,
+            help="Enable for handheld video; leave disabled for a fixed camera.",
+        )
+
         frame_number = st.slider("Preview frame", 0, frame_count - 1, 0)
-        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-        success, frame = capture.read()
+        window_frames, reference_index = _read_video_window(
+            capture,
+            frame_number,
+            int(temporal_window) if temporal_enabled else 1,
+            frame_count,
+        )
+        success = bool(window_frames)
         if success:
+            frame = window_frames[reference_index]
+            processed_frame = frame
+            evidence = None
+            if temporal_enabled and len(window_frames) > 1:
+                processed_frame, evidence = temporal_track_composite(
+                    window_frames,
+                    reference_index=reference_index,
+                    evidence_gain=float(temporal_gain),
+                    stabilise=bool(stabilise_video),
+                )
             timestamp = frame_number / fps if fps > 0 else 0.0
-            st.image(
-                _bgr_to_rgb(frame),
-                caption=f"Frame {frame_number} ({timestamp:.2f} seconds)",
-                width=480,
+            preview_columns = st.columns(3 if evidence is not None else 1)
+            preview_columns[0].image(
+                _bgr_to_rgb(frame), caption=f"Original frame {frame_number}", width=420
             )
+            if evidence is not None:
+                preview_columns[1].image(
+                    evidence, caption="Transient track evidence", width=420
+                )
+                preview_columns[2].image(
+                    _bgr_to_rgb(processed_frame),
+                    caption="Frame sent to segmentation",
+                    width=420,
+                )
+            st.caption(f"Preview time: {timestamp:.2f} seconds")
             if st.button("Load preview frame only"):
-                sample = _video_sample(upload.name, frame, frame_number, fps)
+                sample = _video_sample(
+                    upload.name,
+                    processed_frame,
+                    frame_number,
+                    fps,
+                    temporal_window=len(window_frames) if temporal_enabled else 1,
+                )
                 _replace_input_batch([sample])
 
         st.subheader("Video frame batch")
@@ -1184,11 +1263,31 @@ def _video_acquisition(upload, config: dict) -> None:
             ):
                 if len(samples) >= int(maximum_frames):
                     break
-                capture.set(cv2.CAP_PROP_POS_FRAMES, index)
-                captured, sampled_frame = capture.read()
-                if captured:
+                window_frames, reference_index = _read_video_window(
+                    capture,
+                    index,
+                    int(temporal_window) if temporal_enabled else 1,
+                    frame_count,
+                )
+                if window_frames:
+                    sampled_frame = window_frames[reference_index]
+                    if temporal_enabled and len(window_frames) > 1:
+                        sampled_frame, _ = temporal_track_composite(
+                            window_frames,
+                            reference_index=reference_index,
+                            evidence_gain=float(temporal_gain),
+                            stabilise=bool(stabilise_video),
+                        )
                     samples.append(
-                        _video_sample(upload.name, sampled_frame, index, fps)
+                        _video_sample(
+                            upload.name,
+                            sampled_frame,
+                            index,
+                            fps,
+                            temporal_window=(
+                                len(window_frames) if temporal_enabled else 1
+                            ),
+                        )
                     )
             _replace_input_batch(samples)
             st.success(f"Extracted {len(samples)} frame(s) from the video.")
@@ -1198,7 +1297,11 @@ def _video_acquisition(upload, config: dict) -> None:
 
 
 def _video_sample(
-    video_name: str, frame: np.ndarray, frame_number: int, fps: float
+    video_name: str,
+    frame: np.ndarray,
+    frame_number: int,
+    fps: float,
+    temporal_window: int = 1,
 ) -> dict:
     """Create traceable metadata for one acquired video frame."""
     timestamp = frame_number / fps if fps > 0 else 0.0
@@ -1206,16 +1309,42 @@ def _video_sample(
         "image": frame.copy(),
         "name": f"{Path(video_name).stem}_frame_{frame_number:06d}.jpg",
         "description": (
-            f"{video_name}, frame {frame_number}, {timestamp:.2f} seconds"
+            f"{video_name}, frame {frame_number}, {timestamp:.2f} seconds; "
+            + (
+                f"temporal track enhancement using {temporal_window} frames"
+                if temporal_window > 1
+                else "single-frame processing"
+            )
         ),
     }
 
 
-def _model_page(short_name: str, full_name: str) -> None:
-    st.title(f"{short_name} Classifier")
-    st.info(
-        f"Purpose: team-member workspace for the {full_name}. This model must "
-        "use the shared dataset splits and shared processing pipeline."
+def _read_video_window(
+    capture: cv2.VideoCapture,
+    centre_frame: int,
+    window_size: int,
+    frame_count: int,
+) -> tuple[list[np.ndarray], int]:
+    """Read a centred, boundary-safe temporal window from a video."""
+    if window_size < 1 or window_size % 2 == 0:
+        raise ValueError("Video temporal window must be a positive odd number")
+    available = min(window_size, frame_count)
+    half = available // 2
+    start = max(0, min(centre_frame - half, frame_count - available))
+    indices = list(range(start, start + available))
+    frames: list[np.ndarray] = []
+    captured_indices: list[int] = []
+    for index in indices:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+        success, frame = capture.read()
+        if success:
+            frames.append(frame)
+            captured_indices.append(index)
+    if not frames:
+        return [], 0
+    reference_index = min(
+        range(len(captured_indices)),
+        key=lambda position: abs(captured_indices[position] - centre_frame),
     )
     if short_name == "CNN":
         render_cnn_page()
@@ -1267,6 +1396,7 @@ def _model_page(short_name: str, full_name: str) -> None:
 def _replace_input_batch(samples: list[dict]) -> None:
     """Replace the acquisition queue and activate its first valid sample."""
     st.session_state["input_batch"] = samples
+    st.session_state["shared_segmentation_results"] = {}
     st.session_state["mlp_batch_results"] = {}
     st.session_state["svm_batch_results"] = {}
     st.session_state["decision_tree_batch_results"] = {}
@@ -1279,12 +1409,122 @@ def _replace_input_batch(samples: list[dict]) -> None:
         _set_input(first["image"], first["name"], first["description"])
 
 
+def _render_batch_segmentation_summary(config: dict, current_result: dict) -> None:
+    """Automatically review one segmentation or compare an acquired batch."""
+    samples = st.session_state.get("input_batch", [])
+    if not samples:
+        samples = [{
+            "image": st.session_state["input_image"],
+            "name": st.session_state.get("input_name") or "Current input",
+            "description": st.session_state.get("source_description") or "",
+        }]
+
+    is_batch = len(samples) > 1
+    st.subheader(
+        "Batch / video segmented-particle comparison"
+        if is_batch else "Segmented-particle review"
+    )
+
+    if is_batch:
+        segmented_results = st.session_state.get(
+            "shared_segmentation_results", {}
+        )
+        expected_names = {sample["name"] for sample in samples}
+        cache_is_complete = set(segmented_results) == expected_names
+    else:
+        segmented_results = {samples[0]["name"]: current_result}
+        cache_is_complete = True
+
+    if not cache_is_complete:
+        segmented_results = {}
+        progress = st.progress(0.0, text="Automatically segmenting batch...")
+        current_name = st.session_state.get("input_name")
+        for index, sample in enumerate(samples):
+            sample_result = (
+                current_result
+                if sample["name"] == current_name
+                else _process_tiled_pipeline_image(
+                    sample["image"],
+                    config,
+                    st.session_state.get("calibration_settings"),
+                )
+            )
+            segmented_results[sample["name"]] = sample_result
+            progress.progress(
+                (index + 1) / len(samples),
+                text=f"Segmented {index + 1} of {len(samples)} inputs",
+            )
+        progress.empty()
+        st.session_state["shared_segmentation_results"] = segmented_results
+
+    rows = [
+        {
+            "Input / frame": name,
+            "Detected segmented particles": len(item["features"]),
+            "Segmentation time (ms)": round(
+                float(item["segmentation"].processing_time_ms), 2
+            ),
+        }
+        for name, item in segmented_results.items()
+    ]
+    total = sum(row["Detected segmented particles"] for row in rows)
+    metrics = st.columns(3)
+    metrics[0].metric("Processed inputs / frames", len(rows))
+    metrics[1].metric("Detected particles", total)
+    metrics[2].metric(
+        "Frames with detections",
+        sum(row["Detected segmented particles"] > 0 for row in rows),
+    )
+    if is_batch:
+        st.caption(
+            "The chart compares how many segmented particles were detected "
+            "in each uploaded image or sampled video frame."
+        )
+        st.bar_chart(
+            rows,
+            x="Input / frame",
+            y="Detected segmented particles",
+            color="#FFD700",
+        )
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    selected_name = (
+        st.selectbox(
+            "Inspect segmented particles for an input / frame",
+            list(segmented_results),
+            key="shared_segmented_frame_preview",
+        )
+        if is_batch
+        else next(iter(segmented_results))
+    )
+    selected_result = segmented_results[selected_name]
+    sample_by_name = {sample["name"]: sample for sample in samples}
+    preview = _colour_instance_mask(
+        sample_by_name[selected_name]["image"],
+        selected_result["original_segmentation_mask"],
+        opacity=0.52,
+    )
+    preview = _draw_track_ids(
+        preview,
+        selected_result["features"],
+        selected_result.get("original_bounding_boxes"),
+    )
+    st.image(
+        _bgr_to_rgb(preview),
+        caption=(
+            f"{selected_name}: {len(selected_result['features'])} segmented "
+            "particles detected during preprocessing"
+        ),
+    )
+
+
 def _batch_selector() -> None:
-    """Select the sample sent through the existing one-image pipeline."""
+    """Select the sample sent through the shared one-image pipeline."""
     samples = st.session_state.get("input_batch", [])
     if not samples:
         st.caption("No acquisition batch has been loaded yet.")
         return
+
     st.subheader("Acquisition batch")
     names = [sample["name"] for sample in samples]
     current_name = st.session_state.get("input_name")
@@ -1297,41 +1537,23 @@ def _batch_selector() -> None:
     )
     selected = samples[selected_index]
     if selected["name"] != current_name:
-        _set_input(
-            selected["image"], selected["name"], selected["description"]
-        )
+        _set_input(selected["image"], selected["name"], selected["description"])
     st.caption(selected["description"])
 
-    # Expanders keep a large upload readable: users first see Image 1,
-    # Image 2, etc., and reveal only the previews they want to inspect.
-    show_gallery = st.checkbox(
-        f"Show batch gallery ({len(samples)} image entries)", value=False
-    )
-    if show_gallery:
+    if st.checkbox(f"Show batch gallery ({len(samples)} image entries)", value=False):
         previews_per_page = 12
-        page_count = max(
-            1, (len(samples) + previews_per_page - 1) // previews_per_page
-        )
+        page_count = max(1, (len(samples) + previews_per_page - 1) // previews_per_page)
         page = st.number_input(
-            "Preview page",
-            min_value=1,
-            max_value=page_count,
-            value=1,
-            step=1,
-            help=(
-                "Only 12 entries are placed on a page so a long video batch "
-                "does not overload the browser."
-            ),
+            "Preview page", min_value=1, max_value=page_count, value=1, step=1
         )
         start = (int(page) - 1) * previews_per_page
         stop = min(start + previews_per_page, len(samples))
         st.caption(f"Showing entries {start + 1}–{stop} of {len(samples)}.")
         for index in range(start, stop):
             sample = samples[index]
-            active_text = " — active input" if index == selected_index else ""
+            active = " — active input" if index == selected_index else ""
             with st.expander(
-                f"Image {index + 1}: {sample['name']}{active_text}",
-                expanded=False,
+                f"Image {index + 1}: {sample['name']}{active}", expanded=False
             ):
                 st.image(
                     _bgr_to_rgb(sample["image"]),
@@ -2826,6 +3048,69 @@ def _feature_row(item, centimetres_per_pixel: float | None = None) -> dict:
     return row
 
 
+def _basic_feature_row(item) -> dict:
+    """Return the most interpretable contour measurements for the main table."""
+    return {
+        "Track": f"T{item.track_id}",
+        "Area (px^2)": round(item.area_pixels, 2),
+        "Length (px)": round(item.major_axis_pixels, 2),
+        "Mean width (px)": round(item.mean_width_pixels, 2),
+        "Aspect ratio": round(item.aspect_ratio, 2),
+        "Orientation (degrees)": round(item.orientation_degrees, 2),
+        "Mean intensity": round(item.mean_intensity, 2),
+    }
+
+
+def _advanced_feature_row(item) -> dict:
+    """Return secondary shape and intensity descriptors for inspection."""
+    return {
+        "Track": f"T{item.track_id}",
+        "Perimeter (px)": round(item.perimeter_pixels, 2),
+        "Thickness (px)": round(item.thickness_pixels, 2),
+        "Solidity": round(item.solidity, 3),
+        "Rectangularity": round(item.rectangularity, 3),
+        "Intensity SD": round(item.intensity_stddev, 2),
+        "Circularity": round(item.circularity, 3),
+        "Convexity": round(item.convexity, 3),
+        "Perimeter / length": round(item.perimeter_to_major_axis, 3),
+        "Orientation sine (2 x angle)": round(item.orientation_sin_2x, 3),
+        "Orientation cosine (2 x angle)": round(item.orientation_cos_2x, 3),
+    }
+
+
+def _draw_track_ids(
+    image: np.ndarray,
+    features: list,
+    bounding_boxes: list | tuple | None = None,
+) -> np.ndarray:
+    """Draw readable track IDs that map the segmentation to table rows."""
+    output = image.copy()
+    boxes = (
+        [item.bounding_box for item in features]
+        if bounding_boxes is None
+        else bounding_boxes
+    )
+    if len(boxes) != len(features):
+        boxes = [item.bounding_box for item in features]
+    for item, box in zip(features, boxes, strict=True):
+        if isinstance(box, dict):
+            x = int(round(float(box["x"])))
+            y = int(round(float(box["y"])))
+        else:
+            x, y, _, _ = (int(round(float(value))) for value in box)
+        label = f"T{item.track_id}"
+        origin = (max(2, x), max(18, y - 5))
+        cv2.putText(
+            output, label, origin, cv2.FONT_HERSHEY_SIMPLEX,
+            0.58, (0, 0, 0), 4, cv2.LINE_AA,
+        )
+        cv2.putText(
+            output, label, origin, cv2.FONT_HERSHEY_SIMPLEX,
+            0.58, (0, 255, 255), 2, cv2.LINE_AA,
+        )
+    return output
+
+
 def _set_input(image: np.ndarray, name: str, description: str) -> None:
     st.session_state["input_image"] = image
     st.session_state["input_name"] = name
@@ -2839,6 +3124,7 @@ def _set_input(image: np.ndarray, name: str, description: str) -> None:
     st.session_state["decision_tree_predictions"] = None
     st.session_state["decision_tree_quality"] = None
     st.session_state["extra_trees_predictions"] = None
+    st.session_state["extra_trees_prediction_signature"] = None
 
 
 

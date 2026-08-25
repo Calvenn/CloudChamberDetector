@@ -4,22 +4,15 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-import cloud_chamber.ml.member_models.svm as svm_module
-from cloud_chamber.ml.member_models.decision_tree import (build_visual_report as decision_tree_build_visual_report, encode_report_csv as decision_tree_encode_report_csv, encode_report_png as decision_tree_encode_report_png, load_model as decision_tree_load_model, predict_tracks as decision_tree_predict_tracks)
 from cloud_chamber.ml.member_models.mlp import DISPLAY_NAMES, build_visual_report, encode_report_csv, encode_report_png, load_model, predict_tracks
 from cloud_chamber.reporting import assess_all_contours, build_summary, encode_pdf_report, make_traceability_metadata, reporting_status
 from .context import PageContext
 
-def render(short_name: str, full_name: str, config: dict, context: PageContext) -> None:
-    st.title(f"{short_name} Classifier")
-    if short_name != "MLP":
-        return
+def render(config: dict, context: PageContext) -> None:
+    """Render only the Multilayer Perceptron classification workflow."""
+    st.title("MLP Classifier")
 
-    model_key = {
-        "MLP": "mlp",
-        "SVM": "svm",
-        "Decision Tree": "decision_tree",
-    }[short_name]
+    model_key = "mlp"
     state_key = f"{model_key}_predictions"
     quality_state_key = f"{model_key}_quality"
     batch_state_key = f"{model_key}_batch_results"
@@ -30,24 +23,7 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
     model_viz = build_visual_report
     png_encoder = encode_report_png
     csv_encoder = encode_report_csv
-    if short_name == "SVM":
-        model_path = Path("models/svm_classifier.joblib")
-        train_command = "python scripts/train_svm.py"
-        model_loader = svm_module.load_model
-        model_predict = svm_module.predict_tracks
-        model_viz = svm_module.build_visual_report
-        png_encoder = svm_module.encode_report_png
-        csv_encoder = svm_module.encode_report_csv
-    elif short_name == "Decision Tree":
-        model_path = Path("models/decision_tree_classifier.joblib")
-        train_command = "python scripts/train_decision_tree.py"
-        model_loader = decision_tree_load_model
-        model_predict = decision_tree_predict_tracks
-        model_viz = decision_tree_build_visual_report
-        png_encoder = decision_tree_encode_report_png
-        csv_encoder = decision_tree_encode_report_csv
-
-    st.subheader(f"Run the trained {short_name}")
+    st.subheader("Run the trained MLP")
     result = st.session_state.get("pipeline_result")
     if result is None:
         st.warning(
@@ -80,9 +56,9 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         }
     ]
     button_label = (
-        f"Classify all {len(samples)} inputs and create {short_name} reports"
+        f"Classify all {len(samples)} inputs and create MLP reports"
         if len(samples) > 1
-        else f"Classify and create {short_name} report"
+        else "Classify and create MLP report"
     )
     if st.button(button_label, type="primary"):
         batch_results = {}
@@ -172,22 +148,14 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
                 expanded=False,
             ):
                 if item_predictions:
-                    if short_name == "MLP":
-                        item_overlay, _ = model_viz(
-                            image=entry["analysis_image"],
-                            features=item_result["features"],
-                            predictions=item_predictions,
-                            confidence_threshold=confidence_threshold,
-                            quality_assessments=item_quality,
-                            instance_mask=item_result["segmentation"].binary_mask,
-                        )
-                    else:
-                        item_overlay, _ = model_viz(
-                            entry["analysis_image"],
-                            item_result["features"],
-                            item_predictions,
-                            confidence_threshold,
-                        )
+                    item_overlay, _ = model_viz(
+                        image=entry["analysis_image"],
+                        features=item_result["features"],
+                        predictions=item_predictions,
+                        confidence_threshold=confidence_threshold,
+                        quality_assessments=item_quality,
+                        instance_mask=item_result["segmentation"].binary_mask,
+                    )
                     st.image(context.bgr_to_rgb(item_overlay), width=700)
                 else:
                     st.warning("No segmented track was available to classify.")
@@ -220,27 +188,18 @@ def render(short_name: str, full_name: str, config: dict, context: PageContext) 
         )
         st.session_state[quality_state_key] = quality_assessments
 
-    if short_name == "MLP":
-        overlay, report_rows = model_viz(
-            image=result.get("original_image", result["input_image"]),
-            features=result["features"],
-            predictions=predictions,
-            confidence_threshold=confidence_threshold,
-            quality_assessments=quality_assessments,
-            original_boxes=result.get("original_bounding_boxes"),
-            instance_mask=result.get(
-                "original_segmentation_mask",
-                result["segmentation"].binary_mask,
-            ),
-        )
-    else:
-        overlay, report_rows = model_viz(
-            result.get("original_image", result["input_image"]),
-            result["features"],
-            predictions,
-            confidence_threshold,
-            original_boxes=result.get("original_bounding_boxes"),
-        )
+    overlay, report_rows = model_viz(
+        image=result.get("original_image", result["input_image"]),
+        features=result["features"],
+        predictions=predictions,
+        confidence_threshold=confidence_threshold,
+        quality_assessments=quality_assessments,
+        original_boxes=result.get("original_bounding_boxes"),
+        instance_mask=result.get(
+            "original_segmentation_mask",
+            result["segmentation"].binary_mask,
+        ),
+    )
     for row, track, prediction, quality in zip(
         report_rows,
         result["features"],
@@ -590,14 +549,13 @@ def _render_mlp_model_performance(report_path: Path) -> None:
         st.warning(f"The MLP training report cannot be read: {error}")
         return
 
-    metrics = st.columns(5)
-    metrics[0].metric("Final-test tracks", int(final_test["sample_count"]))
-    metrics[1].metric("Accuracy", f"{float(final_test['accuracy']):.3f}")
-    metrics[2].metric(
+    metrics = st.columns(4)
+    metrics[0].metric("Accuracy", f"{float(final_test['accuracy']):.3f}")
+    metrics[1].metric(
         "Balanced accuracy", f"{float(final_test['balanced_accuracy']):.3f}"
     )
-    metrics[3].metric("Macro F1", f"{float(final_test['macro_f1']):.3f}")
-    metrics[4].metric("Weighted F1", f"{float(final_test['weighted_f1']):.3f}")
+    metrics[2].metric("Macro F1", f"{float(final_test['macro_f1']):.3f}")
+    metrics[3].metric("Weighted F1", f"{float(final_test['weighted_f1']):.3f}")
     st.caption(
         "Macro F1 is the main result because each particle class contributes "
         "equally even when the dataset contains unequal class counts."
@@ -638,7 +596,6 @@ def _render_mlp_model_performance(report_path: Path) -> None:
                 "Precision": float(values.get("precision", 0.0)),
                 "Recall": float(values.get("recall", 0.0)),
                 "F1": float(values.get("f1-score", 0.0)),
-                "Test tracks": int(values.get("support", 0)),
             }
         )
     if class_rows:

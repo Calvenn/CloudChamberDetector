@@ -26,11 +26,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from cloud_chamber.config import load_config
 from cloud_chamber.ml.contour_dataset import (
-    build_feature_csv,
-    build_segmented_feature_csv,
     load_feature_csv,
 )
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS, SoftVotingMLPEnsemble
+from cloud_chamber.ml.shared_features import DEFAULT_FEATURE_DIR, ensure_shared_features
 
 
 SPLITS = ("development", "validation", "final_test")
@@ -76,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--feature-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "features" / "mlp" / "muller",
+        default=DEFAULT_FEATURE_DIR,
     )
     parser.add_argument(
         "--primary-roi-profile",
@@ -128,53 +127,6 @@ def primary_split_annotations(source_path: Path, split: str) -> Path:
     output_path = source_path.with_name(f"{split}_annotations_coco.json")
     output_path.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
     return output_path
-
-
-def load_or_build_features(
-    annotation_path: Path,
-    feature_path: Path,
-    config: dict,
-    allowed_labels: set[str],
-    rebuild: bool,
-    roi_profile_name: str,
-    merge_annotation_fragments: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Load cached features or build them using the source-specific ROI."""
-    if rebuild or not feature_path.exists():
-        print(f"Building labelled contour features: {feature_path.name}")
-        build_segmented_feature_csv(
-            annotation_path,
-            feature_path,
-            config,
-            allowed_labels=allowed_labels,
-            roi_profile_name=roi_profile_name,
-            merge_annotation_fragments=merge_annotation_fragments,
-            use_production_pipeline=True,
-        )
-    return load_feature_csv(feature_path, allowed_labels)
-
-
-def load_or_build_ground_truth_features(
-    annotation_path: Path,
-    feature_path: Path,
-    config: dict,
-    allowed_labels: set[str],
-    rebuild: bool,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build one feature vector from each complete COCO particle mask."""
-    if rebuild or not feature_path.exists():
-        print(f"Building ground-truth features: {feature_path.name}")
-        build_feature_csv(
-            annotation_path,
-            feature_path,
-            config["enhancement"],
-            allowed_labels=allowed_labels,
-            target_size=(
-                int(config["spatial_scaling"]["processing_width"]),
-                int(config["spatial_scaling"]["processing_height"]),
-            ),
-        )
-    return load_feature_csv(feature_path, allowed_labels)
 
 
 def make_pipeline(parameters: dict, random_seed: int):
@@ -286,9 +238,15 @@ def main() -> int:
     config = load_config(args.config)
     seed = int(config["project"]["random_seed"])
     allowed_labels = set(config["classification"]["supported_classes"])
-    args.feature_dir.mkdir(parents=True, exist_ok=True)
-    rebuild_segmented = (
-        args.rebuild_features or args.rebuild_segmented_features
+    ensure_shared_features(
+        config=config,
+        external_split_root=args.split_root,
+        primary_split_root=args.primary_split_root,
+        feature_dir=args.feature_dir,
+        allowed_labels=allowed_labels,
+        rebuild=args.rebuild_features,
+        rebuild_segmented=args.rebuild_segmented_features,
+        primary_roi_profile=args.primary_roi_profile,
     )
 
     primary_annotations = args.primary_split_root / "annotations_coco.json"
@@ -311,38 +269,18 @@ def main() -> int:
             )
         primary_filtered = primary_split_annotations(primary_annotations, split)
 
-        external_segmented_x, external_segmented_y = load_or_build_features(
-            external_annotations,
-            args.feature_dir / f"{split}.csv",
-            config,
-            allowed_labels,
-            rebuild_segmented,
-            "external_muller",
-            True,
+        external_segmented_x, external_segmented_y = load_feature_csv(
+            args.feature_dir / f"{split}.csv", allowed_labels
         )
-        primary_segmented_x, primary_segmented_y = load_or_build_features(
-            primary_filtered,
-            args.feature_dir / f"primary_{split}.csv",
-            config,
-            allowed_labels,
-            rebuild_segmented,
-            args.primary_roi_profile,
-            True,
+        primary_segmented_x, primary_segmented_y = load_feature_csv(
+            args.feature_dir / f"primary_{split}.csv", allowed_labels
         )
         ground_truth_dir = args.feature_dir / "ground_truth"
-        external_x, external_y = load_or_build_ground_truth_features(
-            external_annotations,
-            ground_truth_dir / f"external_{split}.csv",
-            config,
-            allowed_labels,
-            args.rebuild_features,
+        external_x, external_y = load_feature_csv(
+            ground_truth_dir / f"external_{split}.csv", allowed_labels
         )
-        primary_x, primary_y = load_or_build_ground_truth_features(
-            primary_filtered,
-            ground_truth_dir / f"primary_{split}.csv",
-            config,
-            allowed_labels,
-            args.rebuild_features,
+        primary_x, primary_y = load_feature_csv(
+            ground_truth_dir / f"primary_{split}.csv", allowed_labels
         )
         evaluation_x = np.concatenate((external_x, primary_x), axis=0)
         evaluation_y = np.concatenate((external_y, primary_y), axis=0)

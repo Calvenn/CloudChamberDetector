@@ -27,7 +27,7 @@ MODEL_PATH = Path("models/cnn_classifier.pth")
 TRAIN_COMMAND = "python -m cloud_chamber.ml.member_models.cnn"
 
 
-def render_cnn_page(config: dict, context: PageContext) -> None:
+def render(config: dict, context: PageContext) -> None:
     """Render the CNN panel in the same shared flow as the other model pages."""
     st.title("CNN Classifier")
 

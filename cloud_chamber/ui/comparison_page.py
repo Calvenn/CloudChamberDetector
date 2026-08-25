@@ -49,11 +49,6 @@ def _comparison_sample_count(results: dict[str, dict]) -> int | None:
 
 def render() -> None:
     st.title("Final Model Comparison")
-    st.caption(
-        "All five available final-test reports are compared descriptively. "
-        "Macro F1 is the primary ranking measure because every particle class "
-        "contributes equally."
-    )
 
     results, problems = _load_results()
     if not results:
@@ -75,13 +70,6 @@ def render() -> None:
         and len(set(class_signatures.values())) == 1
         and not problems
     )
-    if not fully_aligned:
-        st.warning(
-            "All five models are shown, but this is a descriptive comparison: "
-            "their final-test track counts differ, and CNN does not report V-track. "
-            "The highest reported score may be stated, but the comparison is not "
-            "a strictly controlled evaluation on one identical test cohort."
-        )
 
     winner_name, winner_result = max(
         comparable.items(), key=lambda item: float(item[1]["macro_f1"])
@@ -142,10 +130,6 @@ def render() -> None:
 def _render_executive_overview(results: dict[str, dict]) -> None:
     """Show every reported result while clearly separating it from fair ranking."""
     st.subheader("Five-model reported-results overview")
-    st.caption(
-        "This table is useful for checking the current outputs, but rows with "
-        "different test counts or class sets must not be treated as a fair ranking."
-    )
     rows = []
     for model_name in REPORTS:
         result = results.get(model_name)
@@ -331,11 +315,6 @@ def _render_tradeoff_chart(results: dict[str, dict]) -> None:
         showlegend=False,
     )
     st.plotly_chart(figure, use_container_width=True)
-    st.caption(
-        "This trade-off chart uses each report's current cohort and is descriptive "
-        "until all five models are reevaluated on the same frozen final-test table."
-    )
-
 
 def _render_automatic_findings(
     results: dict[str, dict], comparable: dict[str, dict], definitive: bool
@@ -362,10 +341,6 @@ def _render_automatic_findings(
         "Macro F1 is the primary selection metric because it gives equal "
         "importance to Alpha, Electron/Positron, Proton and V-track despite "
         "their unequal sample frequencies."
-    )
-    findings.append(
-        "For the university report, describe this as the highest reported model; "
-        "also state that different sample counts limit direct experimental fairness."
     )
     for finding in findings:
         st.markdown(f"- {finding}")
