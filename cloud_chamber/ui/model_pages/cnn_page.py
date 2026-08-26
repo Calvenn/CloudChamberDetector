@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +38,6 @@ def render(config: dict, context: PageContext) -> None:
     quality_state_key = f"{model_key}_quality"
     batch_state_key = f"{model_key}_batch_results"
 
-    st.subheader("Run the trained CNN")
     result = st.session_state.get("pipeline_result")
     if result is None:
         st.warning(
@@ -53,7 +51,6 @@ def render(config: dict, context: PageContext) -> None:
         return
 
     model_bundle = load_model(MODEL_PATH)
-    _render_cnn_model_performance(Path("models/cnn_training_report.json"))
     confidence_threshold = st.slider(
         "Confidence reporting threshold",
         min_value=0.0,
@@ -505,70 +502,6 @@ def _render_decision_margin(rows: list[dict]) -> None:
         showlegend=False,
     )
     st.plotly_chart(figure, use_container_width=True)
-
-
-def _render_cnn_model_performance(report_path: Path) -> None:
-    """Present saved labelled CNN final-test results independently of uploads."""
-    st.subheader("CNN model card")
-    if not report_path.exists():
-        st.info("Train the CNN to generate its labelled final-test performance report.")
-        return
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        final_test = report["final_test"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
-        st.warning(f"The CNN training report cannot be read: {error}")
-        return
-    architecture, evaluation = st.columns((1.15, 1))
-    with architecture:
-        st.markdown(
-            "**Input contract**  \n"
-            "Masked grayscale particle-track patch · 1 × 128 × 128  \n\n"
-            "**Feature extractor**  \n"
-            "Conv(1→16) → Pool → Conv(16→32) → Pool → Conv(32→64) → "
-            "Adaptive Average Pool  \n\n"
-            "**Classifier**  \n"
-            "Flatten → Linear(64→4)"
-        )
-    with evaluation:
-        st.markdown(
-            "**Evaluation contract**  \n"
-            "Four classes: Alpha, Electron/Positron, Proton and V-track  \n\n"
-            "Confidence uses softmax probabilities. Predictions below the selected "
-            "threshold are reported as uncertain, but the predicted class is retained."
-        )
-    metrics = st.columns(4)
-    for column, label, key in zip(
-        metrics,
-        ("Accuracy", "Balanced accuracy", "Macro F1", "Weighted F1"),
-        ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1"),
-        strict=True,
-    ):
-        column.metric(label, f"{float(final_test[key]):.3f}")
-    st.caption(
-        "Labelled final-test scores. Macro F1 is emphasised because every particle "
-        "class contributes equally despite unequal sample counts."
-    )
-    classification = final_test.get("classification_report", {})
-    rows = [
-        {
-            "Particle": DISPLAY_NAMES.get(class_name, class_name),
-            "Precision": float(classification.get(class_name, {}).get("precision", 0.0)),
-            "Recall": float(classification.get(class_name, {}).get("recall", 0.0)),
-            "F1": float(classification.get(class_name, {}).get("f1-score", 0.0)),
-        }
-        for class_name in final_test.get("class_names", [])
-    ]
-    if rows:
-        st.markdown("**Performance by particle class**")
-        st.dataframe(
-            rows, use_container_width=True, hide_index=True,
-            column_config={
-                "Precision": st.column_config.NumberColumn(format="%.3f"),
-                "Recall": st.column_config.NumberColumn(format="%.3f"),
-                "F1": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0, format="%.3f"),
-            },
-        )
 
 
 def _render_batch_summary() -> None:
