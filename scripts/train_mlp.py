@@ -375,6 +375,51 @@ def main() -> int:
     final_metrics = evaluate(best_model, final_x, final_y)
     selected_validation = candidates[best_index - 1]["validation"]
 
+    baseline = next(
+        (
+            candidate
+            for candidate in candidates
+            if tuple(candidate["parameters"]["hidden_layer_sizes"]) == (64,)
+            and candidate["parameters"]["activation"] == "relu"
+            and candidate["parameters"]["balancing"] == "none"
+        ),
+        None,
+    )
+    comparison = [candidates[best_index - 1]]
+    if baseline is not None and baseline["candidate"] != best_index:
+        comparison.append(baseline)
+
+    print("\nMLP setting comparison (validation evidence)")
+    print(
+        f"{'MLP setting':<24} {'Balancing':<31} "
+        f"{'Macro F1':>10} {'V-track recall':>15}"
+    )
+    print("-" * 84)
+    for candidate in comparison:
+        parameters = candidate["parameters"]
+        validation = candidate["validation"]
+        layers = ", ".join(
+            str(value) for value in parameters["hidden_layer_sizes"]
+        )
+        activation = (
+            "ReLU"
+            if parameters["activation"] == "relu"
+            else str(parameters["activation"]).title()
+        )
+        balancing_label = (
+            "Square-root inverse frequency"
+            if parameters["balancing"] == "sqrt_inverse_frequency"
+            else "None"
+        )
+        v_track_recall = validation["classification_report"]["v_track"][
+            "recall"
+        ]
+        print(
+            f"{f'MLP ({layers}), {activation}':<24} "
+            f"{balancing_label:<31} "
+            f"{validation['macro_f1']:>9.2%} {v_track_recall:>14.2%}"
+        )
+
     bundle = {
         "model": best_model,
         "feature_columns": FEATURE_COLUMNS,
