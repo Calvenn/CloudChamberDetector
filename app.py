@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import tempfile
 from dataclasses import replace
-from time import perf_counter
+from time import perf_counter, sleep
 from pathlib import Path
 
 import cv2
@@ -1170,6 +1171,7 @@ def _video_acquisition(upload, config: dict) -> None:
         temporary.write(upload.getvalue())
         video_path = Path(temporary.name)
 
+    capture = None
     try:
         capture = cv2.VideoCapture(str(video_path))
         if not capture.isOpened():
@@ -1302,9 +1304,22 @@ def _video_acquisition(upload, config: dict) -> None:
                     )
             _replace_input_batch(samples)
             st.success(f"Extracted {len(samples)} frame(s) from the video.")
-        capture.release()
     finally:
-        video_path.unlink(missing_ok=True)
+        if capture is not None:
+            capture.release()
+            # OpenCV's FFmpeg backend can retain its Windows file handle until
+            # the Python wrapper is collected, even after release().
+            del capture
+            gc.collect()
+        for attempt in range(5):
+            try:
+                video_path.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                # Windows may release the decoder handle a few milliseconds
+                # after VideoCapture.release(). Cleanup must never crash the UI.
+                if attempt < 4:
+                    sleep(0.05)
 
 
 def _video_sample(
@@ -1357,51 +1372,7 @@ def _read_video_window(
         range(len(captured_indices)),
         key=lambda position: abs(captured_indices[position] - centre_frame),
     )
-    if short_name == "CNN":
-        render_cnn_page()
-        return
-
-    module_name = short_name.lower().replace(" ", "_")
-    if short_name == "Extremely Randomized Trees":
-        module_name = "extra_trees"
-    st.code(f"cloud_chamber/ml/member_models/{module_name}.py")
-    st.markdown(
-        """
-        The member implementation should provide training, validation,
-        prediction and model-saving functions. Do not duplicate or alter the
-        shared enhancement, segmentation or feature extraction stages.
-
-        This page is intentionally a placeholder until the assigned member
-        connects their completed classifier.
-        """
-    )
-    if short_name != "MLP":
-        return
-
-    st.subheader("Run the trained MLP")
-    result = st.session_state.get("pipeline_result")
-    if result is None:
-        st.warning(
-            "Process an image or video frame on the Shared Processing "
-            "Pipeline page first."
-        )
-        return
-    model_path = Path("models/mlp_classifier.joblib")
-    if not model_path.exists():
-        st.warning("Train the model first: `python scripts/train_mlp.py`")
-        return
-    confidence_threshold = st.slider(
-        "Reporting confidence threshold",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.60,
-        step=0.05,
-        help=(
-            "Predictions below this probability remain visible but are marked "
-            "Uncertain. This threshold does not retrain the model."
-        ),
-    )
-    st.caption("This page remains a stub until the member model is connected.")
+    return frames, reference_index
 
 
 def _replace_input_batch(samples: list[dict]) -> None:
@@ -1571,17 +1542,6 @@ def _batch_selector() -> None:
                     caption=sample["description"],
                     width=420,
                 )
-
-
-
-
-
-
-
-
-
-
-
 
 def _feature_row(item, centimetres_per_pixel: float | None = None) -> dict:
     row = {
