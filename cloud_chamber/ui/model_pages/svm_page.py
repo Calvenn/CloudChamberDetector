@@ -133,7 +133,7 @@ def render(context: PageContext) -> None:
     # 1. INPUT & PROCESSING SUMMARY & CONTROLS
     # ==============================================================================
     st.markdown("---")
-    st.header("1️⃣ Input & Processing Summary")
+    st.header("Input & Processing Summary")
 
     batch_samples = st.session_state.get("input_batch", [])
     has_batch = len(batch_samples) > 1
@@ -331,11 +331,8 @@ def render(context: PageContext) -> None:
     # ==============================================================================
     # 2. CLASSIFICATION SUMMARY & KPI CARDS
     # ==============================================================================
-    # ==============================================================================
-    # 2. CLASSIFICATION SUMMARY
-    # ==============================================================================
     st.markdown("---")
-    st.header("2️⃣ Classification Summary")
+    st.header("Classification Summary")
 
     if detected_input_type == "Single Image":
         total_tracks = len(predictions)
@@ -433,7 +430,7 @@ def render(context: PageContext) -> None:
     # 3. CLASSIFICATION MAP / VISUAL RESULTS
     # ==============================================================================
     st.markdown("---")
-    st.header("3️⃣ Classification Map / Visual Results")
+    st.header("Classification Map / Visual Results")
 
     overlay_img, _ = svm_module.build_visual_report(
         result["input_image"],
@@ -456,7 +453,7 @@ def render(context: PageContext) -> None:
     # 4. PARTICLE / CLASS DISTRIBUTION
     # ==============================================================================
     st.markdown("---")
-    st.header("4️⃣ Particle / Class Distribution")
+    st.header("Particle / Class Distribution")
 
     dist_col1, dist_col2 = st.columns(2)
 
@@ -537,26 +534,31 @@ def render(context: PageContext) -> None:
     # 5. CONFIDENCE ANALYSIS
     # ==============================================================================
     st.markdown("---")
-    st.header("5️⃣ Confidence Analysis")
+    st.header("Confidence Analysis")
 
     target_preds = [item["prediction"] for item in all_tracks_flat] if has_batch else predictions
     conf_values = [p["confidence"] for p in target_preds]
 
     if conf_values:
+        total = len(conf_values)
         avg_c = np.mean(conf_values)
         med_c = np.median(conf_values)
         min_c = np.min(conf_values)
         max_c = np.max(conf_values)
         above_thresh = sum(1 for c in conf_values if c >= confidence_threshold)
-        below_thresh = len(conf_values) - above_thresh
+        below_thresh = total - above_thresh
 
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric("Avg Confidence", f"{avg_c:.1%}")
-        m2.metric("Median Confidence", f"{med_c:.1%}")
-        m3.metric("Min Confidence", f"{min_c:.1%}")
-        m4.metric("Max Confidence", f"{max_c:.1%}")
-        m5.metric("≥ Threshold", f"{above_thresh} ({above_thresh/len(conf_values):.1%})")
-        m6.metric("< Threshold", f"{below_thresh} ({below_thresh/len(conf_values):.1%})")
+        #row 1
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Average", f"{avg_c:.1%}")
+        c2.metric("Median", f"{med_c:.1%}")
+        c3.metric("Minimum", f"{min_c:.1%}")
+        c4.metric("Maximum", f"{max_c:.1%}")
+
+        #row 2
+        t1, t2 = st.columns(2)
+        t1.metric(f"≥ Threshold ({confidence_threshold:.0%})", f"{above_thresh}", f"{above_thresh/total:.1%} of total")
+        t2.metric(f"< Threshold ({confidence_threshold:.0%})", f"{below_thresh}", f"-{below_thresh/total:.1%} of total", delta_color="inverse")
 
         conf_col1, conf_col2 = st.columns(2)
         with conf_col1:
@@ -613,7 +615,7 @@ def render(context: PageContext) -> None:
     # 6. TRACK-LEVEL RESULTS TABLE
     # ==============================================================================
     st.markdown("---")
-    st.header("6️⃣ Track-Level Results Table")
+    st.header("Track-Level Results Table")
 
     # Table Filters
     f_col1, f_col2 = st.columns(2)
@@ -678,7 +680,7 @@ def render(context: PageContext) -> None:
     # 7. TRACK INSPECTOR
     # ==============================================================================
     st.markdown("---")
-    st.header("7️⃣ Track Inspector")
+    st.header("Track Inspector")
 
     raw_track_ids = [t.track_id for t in result["features"]]
     if raw_track_ids:
@@ -786,7 +788,7 @@ def render(context: PageContext) -> None:
     # 8. OVERALL FEATURE ANALYSIS
     # ==============================================================================
     st.markdown("---")
-    st.header("8️⃣ Overall Feature Analysis")
+    st.header("Overall Feature Analysis")
 
     if result["features"]:
         feat_matrix = svm_module.features_to_matrix(result["features"])
@@ -829,7 +831,7 @@ def render(context: PageContext) -> None:
     if has_batch:
         st.markdown("---")
         if is_video:
-            st.header("9️⃣ Video Temporal Analytics & Trajectory Journey")
+            st.header("Video Temporal Analytics & Trajectory Journey")
 
             sorted_frames = sorted(list(batch_results.keys()))
 
@@ -891,7 +893,7 @@ def render(context: PageContext) -> None:
                 else:
                     st.info("No multi-frame trajectories associated across current video sampling interval.")
         else:
-            st.header("9️⃣ Batch Image Overview & Summary Table")
+            st.header("Batch Image Overview & Summary Table")
 
             # Image-Level Summary Table
             img_table_rows = []
@@ -923,7 +925,7 @@ def render(context: PageContext) -> None:
     # 10. MODEL PERFORMANCE SECTION
     # ==============================================================================
     st.markdown("---")
-    st.header("🔟 Model Performance Evaluation")
+    st.header("Model Performance Evaluation")
 
     st.markdown("""
     <div class="info-callout">
@@ -985,7 +987,7 @@ def render(context: PageContext) -> None:
     # 11. MODEL / METHODOLOGY INFORMATION
     # ==============================================================================
     st.markdown("---")
-    with st.expander("ℹ️ 11. Model & Methodology Information", expanded=False):
+    with st.expander("Model & Methodology Information", expanded=False):
         st.markdown(f"""
         ### SVM Architecture & Preprocessing Pipeline
         • **Model Pipeline:** `scikit-learn Pipeline` (`RobustScaler` + `SVC`)  
@@ -1006,7 +1008,7 @@ def render(context: PageContext) -> None:
     # 12. REPORT & EXPORT CENTRE
     # ==============================================================================
     st.markdown("---")
-    st.header("12. 📤 Report Export Centre")
+    st.header("Report Export")
 
     # Generate metadata dictionary for exports
     export_metadata = {
