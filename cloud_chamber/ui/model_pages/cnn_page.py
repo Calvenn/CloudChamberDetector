@@ -291,14 +291,7 @@ def render(config: dict, context: PageContext) -> None:
     )
     summary_columns[5].metric("Processing", f"{processing_time_ms:.1f} ms")
 
-    st.dataframe(
-        [
-            {"Particle type": name, "Predicted count": count}
-            for name, count in summary["class_counts"].items()
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+    _render_particle_composition_chart(summary)
     st.subheader("CNN track-patch evidence")
     st.caption(
         "Each segmented track is cropped, masked and resized to 128 × 128 pixels "
@@ -307,31 +300,16 @@ def render(config: dict, context: PageContext) -> None:
     st.image(context.bgr_to_rgb(overlay))
     st.markdown(
         "**Legend:** 🟩 Alpha · 🟦 Electron/Positron · 🟥 Proton · "
-        "🟪 V-track · Uncertain predictions retain their class colour · "
-        "Grey dashed: review segmentation"
+        "🟪 V-track · Uncertain predictions retain their class colour"
     )
-    _render_patch_atlas(
+    decision_rows = _build_cnn_decision_rows(predictions, report_rows)
+    _render_track_details(
         result["input_image"],
         result["segmentation"].binary_mask,
         result["features"],
         predictions,
-    )
-    decision_rows = _build_cnn_decision_rows(predictions, report_rows)
-    _render_probability_heatmap(predictions, model_bundle["classes"])
-    _render_decision_margin(decision_rows)
-    st.markdown("**CNN track decisions**")
-    st.dataframe(
         decision_rows,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Confidence": st.column_config.ProgressColumn(
-                min_value=0.0, max_value=1.0, format="percent"
-            ),
-            "Decision margin": st.column_config.ProgressColumn(
-                min_value=0.0, max_value=1.0, format="percent"
-            ),
-        },
+        quality_assessments,
     )
     batch_row = {
         "Input": st.session_state["input_name"],
@@ -384,29 +362,67 @@ def render(config: dict, context: PageContext) -> None:
     )
 
 
-def _render_patch_atlas(
+def _render_track_details(
     image: np.ndarray,
     binary_mask: np.ndarray,
     features: list,
     predictions: list[dict],
+    decision_rows: list[dict],
+    quality_assessments: list[dict],
 ) -> None:
-    """Display the exact masked 128 x 128 track patches supplied to the CNN."""
-    st.markdown("**CNN input-patch atlas**")
-    if not features:
-        return
-    columns = st.columns(4)
-    for index, (track, prediction) in enumerate(zip(features, predictions, strict=True)):
+    """Show each CNN input patch and decision in one collapsible panel."""
+    st.subheader("Track-patch details")
+    st.caption("Open a track to inspect its CNN input patch and prediction details.")
+    for track, prediction, decision, quality in zip(
+        features, predictions, decision_rows, quality_assessments, strict=True
+    ):
         patch = crop_track_patch(image, track.bounding_box, binary_mask)
-        with columns[index % len(columns)]:
-            st.image(
-                patch,
-                clamp=True,
-                caption=(
-                    f"T{track.track_id} · {prediction['particle_type']}\n"
-                    f"{float(prediction['confidence']):.0%} confidence"
-                ),
-                use_container_width=True,
-            )
+        with st.expander(
+            f"{decision['Track']} · {decision['Predicted particle']} · "
+            f"{decision['Confidence']:.0%} confidence",
+            expanded=False,
+        ):
+            patch_column, detail_column = st.columns((1, 1.45))
+            with patch_column:
+                st.image(
+                    patch,
+                    clamp=True,
+                    caption="Masked 128 × 128 patch supplied to the CNN",
+                    use_container_width=True,
+                )
+            with detail_column:
+                st.markdown("**CNN decision fields**")
+                first_row = st.columns(2)
+                first_row[0].metric("Predicted class", decision["Predicted particle"])
+                first_row[1].metric("Confidence", f"{decision['Confidence']:.1%}")
+                st.progress(
+                    decision["Confidence"],
+                    text=f"Predicted-class probability: {decision['Confidence']:.1%}",
+                )
+                second_row = st.columns(2)
+                second_row[0].metric("Runner-up class", decision["Runner-up"])
+                second_row[1].metric(
+                    "Runner-up probability",
+                    f"{decision['Runner-up probability']:.1%}",
+                )
+                st.progress(
+                    decision["Runner-up probability"],
+                    text=(
+                        "Runner-up probability: "
+                        f"{decision['Runner-up probability']:.1%}"
+                    ),
+                )
+                st.caption(
+                    f"Status: {decision['Status']} · "
+                    f"Response time: {decision['Response time (ms)']:.2f} ms"
+                )
+                st.markdown("**Segmentation quality**")
+                quality_row = st.columns(2)
+                quality_row[0].metric("Contour quality", quality["grade"])
+                quality_row[1].metric("Quality score", f"{quality['score']}/100")
+                st.caption(f"Local contrast: {quality['local_contrast']:.1f}")
+                for warning in quality["warnings"]:
+                    st.warning(warning)
 
 
 def _build_cnn_decision_rows(
@@ -427,7 +443,6 @@ def _build_cnn_decision_rows(
                 "Confidence": float(winner_probability),
                 "Runner-up": DISPLAY_NAMES.get(runner_up, runner_up),
                 "Runner-up probability": float(runner_up_probability),
-                "Decision margin": float(winner_probability - runner_up_probability),
                 "Status": report_row.get("Reporting decision", report_row["Status"]),
                 "Response time (ms)": float(prediction["inference_time_ms"]),
             }
@@ -435,71 +450,31 @@ def _build_cnn_decision_rows(
     return rows
 
 
-def _render_probability_heatmap(
-    predictions: list[dict], class_names: list[str]) -> None:
-    """Visualise the complete CNN softmax distribution for every track."""
-    st.markdown("**CNN probability map**")
-    display_classes = [DISPLAY_NAMES.get(name, name) for name in class_names]
-    probabilities = np.asarray(
-        [
-            [float(prediction["probabilities"].get(name, 0.0)) for name in class_names]
-            for prediction in predictions
-        ],
-        dtype=float,
-    )
-    figure = go.Figure(
-        go.Heatmap(
-            z=probabilities,
-            x=display_classes,
-            y=[f"T{prediction['track_id']}" for prediction in predictions],
-            colorscale="Blues",
-            zmin=0.0,
-            zmax=1.0,
-            text=[[f"{value:.0%}" for value in row] for row in probabilities],
-            texttemplate="%{text}",
-            hovertemplate="Track: %{y}<br>Class: %{x}<br>Probability: %{z:.2%}<extra></extra>",
-            colorbar={"title": "Probability"},
-        )
-    )
-    figure.update_layout(
-        height=max(300, 60 * len(predictions) + 130),
-        xaxis_title="Particle class",
-        yaxis_title="Detected track",
-        margin={"l": 10, "r": 10, "t": 20, "b": 30},
-    )
-    st.plotly_chart(figure, use_container_width=True)
-
-
-def _render_decision_margin(rows: list[dict]) -> None:
-    """Show how strongly the CNN separates its first and second choices."""
-    st.markdown("**Top-two decision margin**")
+def _render_particle_composition_chart(summary: dict) -> None:
+    """Show the predicted particle mix for the current image or frame."""
+    st.markdown("**Predicted particle composition**")
     palette = {
         "Alpha": "#00B83F",
         "Electron/Positron": "#1976D2",
         "Proton": "#E53935",
         "V-track": "#9C27B0",
     }
+    names = list(summary["class_counts"])
     figure = go.Figure(
-        go.Bar(
-            x=[row["Decision margin"] for row in rows],
-            y=[row["Track"] for row in rows],
-            orientation="h",
-            marker_color=[palette.get(row["Predicted particle"], "#808080") for row in rows],
-            customdata=[(row["Predicted particle"], row["Runner-up"]) for row in rows],
-            text=[f"{row['Decision margin']:.0%}" for row in rows],
+        go.Pie(
+            labels=names,
+            values=[summary["class_counts"][name] for name in names],
+            marker={"colors": [palette[name] for name in names]},
+            textinfo="label+value+percent",
             textposition="outside",
-            hovertemplate=(
-                "Track: %{y}<br>Predicted: %{customdata[0]}<br>"
-                "Runner-up: %{customdata[1]}<br>Margin: %{x:.2%}<extra></extra>"
-            ),
+            automargin=True,
+            sort=False,
         )
     )
     figure.update_layout(
-        xaxis={"title": "Top probability minus runner-up probability", "range": [0, 1.08], "tickformat": ".0%"},
-        yaxis={"autorange": "reversed", "title": "Track"},
-        height=max(280, 48 * len(rows) + 100),
-        margin={"l": 10, "r": 35, "t": 20, "b": 45},
-        showlegend=False,
+        height=360,
+        margin={"l": 10, "r": 10, "t": 10, "b": 10},
+        legend_title_text="Particle class",
     )
     st.plotly_chart(figure, use_container_width=True)
 
@@ -509,25 +484,8 @@ def _render_batch_summary() -> None:
     rows = list(st.session_state.get("batch_reports", {}).values())
     if rows:
         st.subheader("Batch and video-frame trace")
-        figure = go.Figure()
-        figure.add_bar(
-            x=[row["Input"] for row in rows],
-            y=[row["Confident"] for row in rows],
-            name="Confident tracks",
-            marker_color="#2E7D32",
+        st.caption(
+            "Use this table to compare detected tracks, class counts and processing "
+            "time across uploaded images or video frames."
         )
-        figure.add_bar(
-            x=[row["Input"] for row in rows],
-            y=[row["Uncertain"] for row in rows],
-            name="Uncertain tracks",
-            marker_color="#F9A825",
-        )
-        figure.update_layout(
-            title="Track-reporting status by image or video frame",
-            barmode="stack",
-            xaxis_title="Input / frame",
-            yaxis_title="Detected tracks",
-            margin={"l": 10, "r": 10, "t": 55, "b": 80},
-        )
-        st.plotly_chart(figure, use_container_width=True)
         st.dataframe(rows, use_container_width=True, hide_index=True)
