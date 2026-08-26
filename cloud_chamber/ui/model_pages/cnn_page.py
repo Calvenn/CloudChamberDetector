@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,7 @@ from cloud_chamber.ui.model_pages.context import PageContext
 
 
 MODEL_PATH = Path("models/cnn_classifier.pth")
+TRAINING_REPORT_PATH = Path("models/cnn_training_report.json")
 TRAIN_COMMAND = "python -m cloud_chamber.ml.member_models.cnn"
 
 
@@ -279,6 +281,8 @@ def render(config: dict, context: PageContext) -> None:
         )
     ]
 
+    _render_final_test_evaluation()
+
     st.subheader("Image-level result summary")
     summary_columns = st.columns(6)
     summary_columns[0].metric("Detected", summary["detected_contours"])
@@ -423,6 +427,64 @@ def _render_track_details(
                 st.caption(f"Local contrast: {quality['local_contrast']:.1f}")
                 for warning in quality["warnings"]:
                     st.warning(warning)
+
+
+def _render_final_test_evaluation() -> None:
+    """Show the saved final-test metrics for the trained CNN."""
+    if not TRAINING_REPORT_PATH.exists():
+        return
+
+    try:
+        training_report = json.loads(TRAINING_REPORT_PATH.read_text(encoding="utf-8"))
+        metrics = training_report["final_test"]
+        classification_report = metrics["classification_report"]
+        confusion_matrix = np.asarray(metrics["confusion_matrix"], dtype=int)
+        class_names = list(metrics["class_names"])
+    except (json.JSONDecodeError, KeyError, OSError, TypeError, ValueError):
+        st.info("Saved CNN final-test metrics are unavailable.")
+        return
+
+    total = int(confusion_matrix.sum())
+    if total == 0 or len(class_names) != len(confusion_matrix):
+        return
+
+    mean_time = float(metrics["mean_inference_ms_per_track"])
+    weighted = classification_report["weighted avg"]
+    rows = [
+        {
+            "Predicted": "Overall (weighted)",
+            "Accuracy": f"{float(metrics['accuracy']):.2%}",
+            "Precision": f"{float(weighted['precision']):.2%}",
+            "Recall": f"{float(weighted['recall']):.2%}",
+            "F1-score": f"{float(weighted['f1-score']):.2%}",
+            "Processing time": f"{mean_time:.4f} ms/track",
+        }
+    ]
+    for index, class_name in enumerate(class_names):
+        class_metrics = classification_report[class_name]
+        true_positive = int(confusion_matrix[index, index])
+        false_positive = int(confusion_matrix[:, index].sum()) - true_positive
+        false_negative = int(confusion_matrix[index, :].sum()) - true_positive
+        true_negative = total - true_positive - false_positive - false_negative
+        one_vs_rest_accuracy = (true_positive + true_negative) / total
+        rows.append(
+            {
+                "Predicted": DISPLAY_NAMES.get(class_name, class_name),
+                "Accuracy": f"{one_vs_rest_accuracy:.2%}",
+                "Precision": f"{float(class_metrics['precision']):.2%}",
+                "Recall": f"{float(class_metrics['recall']):.2%}",
+                "F1-score": f"{float(class_metrics['f1-score']):.2%}",
+                "Processing time": f"{mean_time:.4f} ms/track",
+            }
+        )
+
+    st.subheader("CNN final-test evaluation")
+    st.caption(
+        "Metrics were recorded using the saved final-test set. Per-class accuracy "
+        "uses one-versus-rest accuracy; processing time is the mean CNN inference "
+        "time per track."
+    )
+    st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 def _build_cnn_decision_rows(
