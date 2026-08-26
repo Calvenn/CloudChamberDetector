@@ -42,7 +42,7 @@
     "macro_f1": 0.8044548884161548,
     "weighted_f1": 0.9153815561247849,
     "balanced_accuracy": 0.7858689911236539,
-    "mean_inference_ms_per_track": 0.1310736968745386,
+    "mean_inference_ms_per_track": 0.1408710505218167,
     "class_names": [
       "alpha",
       "electron_positron",
@@ -141,7 +141,7 @@
         "macro_f1": 0.7679184347906812,
         "weighted_f1": 0.9052604466596075,
         "balanced_accuracy": 0.7425141961099637,
-        "mean_inference_ms_per_track": 0.020567361666993092,
+        "mean_inference_ms_per_track": 0.02085605453132314,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -230,7 +230,7 @@
         "macro_f1": 0.7703797737306338,
         "weighted_f1": 0.9054848536845143,
         "balanced_accuracy": 0.7510081033664248,
-        "mean_inference_ms_per_track": 0.020574338411790585,
+        "mean_inference_ms_per_track": 0.021921331193611778,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -319,7 +319,7 @@
         "macro_f1": 0.7900513794487667,
         "weighted_f1": 0.9127072703552389,
         "balanced_accuracy": 0.769526056201092,
-        "mean_inference_ms_per_track": 0.02101275060184333,
+        "mean_inference_ms_per_track": 0.021078027264012842,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -408,7 +408,7 @@
         "macro_f1": 0.7702825288561252,
         "weighted_f1": 0.9037404279584297,
         "balanced_accuracy": 0.7438040647778812,
-        "mean_inference_ms_per_track": 0.020632718525152523,
+        "mean_inference_ms_per_track": 0.02155878107253359,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -497,7 +497,7 @@
         "macro_f1": 0.7853865634566181,
         "weighted_f1": 0.9097468792309826,
         "balanced_accuracy": 0.7633521279055713,
-        "mean_inference_ms_per_track": 0.02295036086718419,
+        "mean_inference_ms_per_track": 0.020518765035545627,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -586,7 +586,7 @@
         "macro_f1": 0.7973429735564223,
         "weighted_f1": 0.9136131424655193,
         "balanced_accuracy": 0.7777147678959013,
-        "mean_inference_ms_per_track": 0.020860224539003654,
+        "mean_inference_ms_per_track": 0.02061812349681204,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -675,7 +675,7 @@
         "macro_f1": 0.7627954370538436,
         "weighted_f1": 0.903011328119753,
         "balanced_accuracy": 0.7386641335708768,
-        "mean_inference_ms_per_track": 0.0200980753803231,
+        "mean_inference_ms_per_track": 0.021011146752062195,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -764,7 +764,7 @@
         "macro_f1": 0.7703797737306338,
         "weighted_f1": 0.9054848536845143,
         "balanced_accuracy": 0.7510081033664248,
-        "mean_inference_ms_per_track": 0.02030890136345218,
+        "mean_inference_ms_per_track": 0.02103488372065427,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -853,7 +853,7 @@
         "macro_f1": 0.7872236090808893,
         "weighted_f1": 0.9113118859982225,
         "balanced_accuracy": 0.767923492098528,
-        "mean_inference_ms_per_track": 0.02035364875659188,
+        "mean_inference_ms_per_track": 0.021333761026426694,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -942,7 +942,7 @@
         "macro_f1": 0.7679184347906812,
         "weighted_f1": 0.9052604466596075,
         "balanced_accuracy": 0.7425141961099637,
-        "mean_inference_ms_per_track": 0.02037995188308334,
+        "mean_inference_ms_per_track": 0.02078973536504546,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1031,7 +1031,7 @@
         "macro_f1": 0.7703797737306338,
         "weighted_f1": 0.9054848536845143,
         "balanced_accuracy": 0.7510081033664248,
-        "mean_inference_ms_per_track": 0.030147955093370173,
+        "mean_inference_ms_per_track": 0.020863753007938666,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1120,7 +1120,7 @@
         "macro_f1": 0.7900513794487667,
         "weighted_f1": 0.9127072703552389,
         "balanced_accuracy": 0.769526056201092,
-        "mean_inference_ms_per_track": 0.02164402566389472,
+        "mean_inference_ms_per_track": 0.021223897351427774,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1209,7 +1209,7 @@
         "macro_f1": 0.7660336815458716,
         "weighted_f1": 0.9039920673961599,
         "balanced_accuracy": 0.7394654156221588,
-        "mean_inference_ms_per_track": 0.0377546912598554,
+        "mean_inference_ms_per_track": 0.05512766640070126,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1298,7 +1298,7 @@
         "macro_f1": 0.7643045000956533,
         "weighted_f1": 0.9024089827342654,
         "balanced_accuracy": 0.7398050996508673,
-        "mean_inference_ms_per_track": 0.03721058540540163,
+        "mean_inference_ms_per_track": 0.07317425821914914,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1387,7 +1387,7 @@
         "macro_f1": 0.7881611768350243,
         "weighted_f1": 0.9106904094690014,
         "balanced_accuracy": 0.7704761860967025,
-        "mean_inference_ms_per_track": 0.037395829993857294,
+        "mean_inference_ms_per_track": 0.03758011226835993,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1476,7 +1476,7 @@
         "macro_f1": 0.7694270584814505,
         "weighted_f1": 0.9036438311976824,
         "balanced_accuracy": 0.7428538801386722,
-        "mean_inference_ms_per_track": 0.037156776262165486,
+        "mean_inference_ms_per_track": 0.06443360064249842,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1565,7 +1565,7 @@
         "macro_f1": 0.7762980427355571,
         "weighted_f1": 0.9046878641295365,
         "balanced_accuracy": 0.7530992540856243,
-        "mean_inference_ms_per_track": 0.03760729751573187,
+        "mean_inference_ms_per_track": 0.05581724137720729,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1654,7 +1654,7 @@
         "macro_f1": 0.8024254050644252,
         "weighted_f1": 0.9144800178129712,
         "balanced_accuracy": 0.7823241788898173,
-        "mean_inference_ms_per_track": 0.04653873295908228,
+        "mean_inference_ms_per_track": 0.037409302325017074,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1743,7 +1743,7 @@
         "macro_f1": 0.7672867689659907,
         "weighted_f1": 0.9046378144911209,
         "balanced_accuracy": 0.7402666976734409,
-        "mean_inference_ms_per_track": 0.03724699278318031,
+        "mean_inference_ms_per_track": 0.04757546110635283,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1832,7 +1832,7 @@
         "macro_f1": 0.7643045000956533,
         "weighted_f1": 0.9024089827342654,
         "balanced_accuracy": 0.7398050996508673,
-        "mean_inference_ms_per_track": 0.03799302325681178,
+        "mean_inference_ms_per_track": 0.04643993584640621,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -1921,7 +1921,7 @@
         "macro_f1": 0.7881611768350243,
         "weighted_f1": 0.9106904094690014,
         "balanced_accuracy": 0.7704761860967025,
-        "mean_inference_ms_per_track": 0.03767586207053618,
+        "mean_inference_ms_per_track": 0.04612133119357716,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2010,7 +2010,7 @@
         "macro_f1": 0.7660336815458716,
         "weighted_f1": 0.9039920673961599,
         "balanced_accuracy": 0.7394654156221588,
-        "mean_inference_ms_per_track": 0.03796214915727715,
+        "mean_inference_ms_per_track": 0.03763111467739648,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2099,7 +2099,7 @@
         "macro_f1": 0.7643045000956533,
         "weighted_f1": 0.9024089827342654,
         "balanced_accuracy": 0.7398050996508673,
-        "mean_inference_ms_per_track": 0.03722526062389726,
+        "mean_inference_ms_per_track": 0.04578837209454261,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2188,7 +2188,7 @@
         "macro_f1": 0.7881611768350243,
         "weighted_f1": 0.9106904094690014,
         "balanced_accuracy": 0.7704761860967025,
-        "mean_inference_ms_per_track": 0.04562125100336245,
+        "mean_inference_ms_per_track": 0.04697048917371028,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2277,7 +2277,7 @@
         "macro_f1": 0.7679184347906812,
         "weighted_f1": 0.9052604466596075,
         "balanced_accuracy": 0.7425141961099637,
-        "mean_inference_ms_per_track": 0.07364619085970843,
+        "mean_inference_ms_per_track": 0.07929847634398568,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2366,7 +2366,7 @@
         "macro_f1": 0.7660406199227637,
         "weighted_f1": 0.9048666896755444,
         "balanced_accuracy": 0.7422089458047134,
-        "mean_inference_ms_per_track": 0.07161820369012506,
+        "mean_inference_ms_per_track": 0.07187305533165843,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2455,7 +2455,7 @@
         "macro_f1": 0.787118873564987,
         "weighted_f1": 0.9103111556521299,
         "balanced_accuracy": 0.7672366241681162,
-        "mean_inference_ms_per_track": 0.08149919807606577,
+        "mean_inference_ms_per_track": 0.08193111467683885,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2544,7 +2544,7 @@
         "macro_f1": 0.7718030653556969,
         "weighted_f1": 0.9058529968743956,
         "balanced_accuracy": 0.7447616945464866,
-        "mean_inference_ms_per_track": 0.06333841218879341,
+        "mean_inference_ms_per_track": 0.07150304731318231,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2633,7 +2633,7 @@
         "macro_f1": 0.7746255956991921,
         "weighted_f1": 0.904584904143724,
         "balanced_accuracy": 0.7511570059543518,
-        "mean_inference_ms_per_track": 0.07282389735465712,
+        "mean_inference_ms_per_track": 0.07964330392731626,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2722,7 +2722,7 @@
         "macro_f1": 0.8017641315062242,
         "weighted_f1": 0.9151083127428805,
         "balanced_accuracy": 0.7836214926871311,
-        "mean_inference_ms_per_track": 0.0805615076177715,
+        "mean_inference_ms_per_track": 0.09102838813096102,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2811,7 +2811,7 @@
         "macro_f1": 0.7679184347906812,
         "weighted_f1": 0.9052604466596075,
         "balanced_accuracy": 0.7425141961099637,
-        "mean_inference_ms_per_track": 0.08163247794736664,
+        "mean_inference_ms_per_track": 0.07170080192176212,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2900,7 +2900,7 @@
         "macro_f1": 0.7704373233162082,
         "weighted_f1": 0.9062591177597791,
         "balanced_accuracy": 0.7452577262925183,
-        "mean_inference_ms_per_track": 0.07224915797988632,
+        "mean_inference_ms_per_track": 0.08125942261255595,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -2989,7 +2989,7 @@
         "macro_f1": 0.787118873564987,
         "weighted_f1": 0.9103111556521299,
         "balanced_accuracy": 0.7672366241681162,
-        "mean_inference_ms_per_track": 0.07200392943120497,
+        "mean_inference_ms_per_track": 0.08013857257402235,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3078,7 +3078,7 @@
         "macro_f1": 0.7679184347906812,
         "weighted_f1": 0.9052604466596075,
         "balanced_accuracy": 0.7425141961099637,
-        "mean_inference_ms_per_track": 0.07191130713843584,
+        "mean_inference_ms_per_track": 0.07287265437224966,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3167,7 +3167,7 @@
         "macro_f1": 0.7660406199227637,
         "weighted_f1": 0.9048666896755444,
         "balanced_accuracy": 0.7422089458047134,
-        "mean_inference_ms_per_track": 0.07224667201214209,
+        "mean_inference_ms_per_track": 0.07245862068953449,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3256,7 +3256,7 @@
         "macro_f1": 0.787118873564987,
         "weighted_f1": 0.9103111556521299,
         "balanced_accuracy": 0.7672366241681162,
-        "mean_inference_ms_per_track": 0.07359462710499891,
+        "mean_inference_ms_per_track": 0.0890530874074331,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3345,7 +3345,7 @@
         "macro_f1": 0.7684947298438727,
         "weighted_f1": 0.9060772741339047,
         "balanced_accuracy": 0.7433154781612458,
-        "mean_inference_ms_per_track": 0.11314394546713498,
+        "mean_inference_ms_per_track": 0.11383688853226573,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3434,7 +3434,7 @@
         "macro_f1": 0.7629246589829709,
         "weighted_f1": 0.903901020082355,
         "balanced_accuracy": 0.7414076637534314,
-        "mean_inference_ms_per_track": 0.11325260625479805,
+        "mean_inference_ms_per_track": 0.1401777866873132,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3523,7 +3523,7 @@
         "macro_f1": 0.7847317958394762,
         "weighted_f1": 0.9080769377586531,
         "balanced_accuracy": 0.7653288097603018,
-        "mean_inference_ms_per_track": 0.13927353648645296,
+        "mean_inference_ms_per_track": 0.13918380112095594,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3612,7 +3612,7 @@
         "macro_f1": 0.7619833006677659,
         "weighted_f1": 0.9038124836010986,
         "balanced_accuracy": 0.7343599728822111,
-        "mean_inference_ms_per_track": 0.11277530072213979,
+        "mean_inference_ms_per_track": 0.11377497995288616,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3701,7 +3701,7 @@
         "macro_f1": 0.7738426013857034,
         "weighted_f1": 0.9053335900598387,
         "balanced_accuracy": 0.7473488770117178,
-        "mean_inference_ms_per_track": 0.12129582999218214,
+        "mean_inference_ms_per_track": 0.13080513231679308,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3790,7 +3790,7 @@
         "macro_f1": 0.8044548884161548,
         "weighted_f1": 0.9153815561247849,
         "balanced_accuracy": 0.7858689911236539,
-        "mean_inference_ms_per_track": 0.1310736968745386,
+        "mean_inference_ms_per_track": 0.1408710505218167,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3879,7 +3879,7 @@
         "macro_f1": 0.7684947298438727,
         "weighted_f1": 0.9060772741339047,
         "balanced_accuracy": 0.7433154781612458,
-        "mean_inference_ms_per_track": 0.11309983961565817,
+        "mean_inference_ms_per_track": 0.11505260625501247,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -3968,7 +3968,7 @@
         "macro_f1": 0.7673532298638849,
         "weighted_f1": 0.905301708486187,
         "balanced_accuracy": 0.7444564442412362,
-        "mean_inference_ms_per_track": 0.11289029671293747,
+        "mean_inference_ms_per_track": 0.11364322373537651,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -4057,7 +4057,7 @@
         "macro_f1": 0.7847317958394762,
         "weighted_f1": 0.9080769377586531,
         "balanced_accuracy": 0.7653288097603018,
-        "mean_inference_ms_per_track": 0.14006479550874196,
+        "mean_inference_ms_per_track": 0.184197594226849,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -4146,7 +4146,7 @@
         "macro_f1": 0.7684947298438727,
         "weighted_f1": 0.9060772741339047,
         "balanced_accuracy": 0.7433154781612458,
-        "mean_inference_ms_per_track": 0.11275116279110244,
+        "mean_inference_ms_per_track": 0.13001275060315814,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -4235,7 +4235,7 @@
         "macro_f1": 0.7629246589829709,
         "weighted_f1": 0.903901020082355,
         "balanced_accuracy": 0.7414076637534314,
-        "mean_inference_ms_per_track": 0.11220697674357613,
+        "mean_inference_ms_per_track": 0.12158171611939521,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -4324,7 +4324,7 @@
         "macro_f1": 0.7847317958394762,
         "weighted_f1": 0.9080769377586531,
         "balanced_accuracy": 0.7653288097603018,
-        "mean_inference_ms_per_track": 0.13958227746721238,
+        "mean_inference_ms_per_track": 0.1730881315159024,
         "class_names": [
           "alpha",
           "electron_positron",
@@ -4407,7 +4407,7 @@
     "macro_f1": 0.772178461596903,
     "weighted_f1": 0.9250159408046349,
     "balanced_accuracy": 0.7625760930561656,
-    "mean_inference_ms_per_track": 0.13813242087249428,
+    "mean_inference_ms_per_track": 0.14875705731443908,
     "class_names": [
       "alpha",
       "electron_positron",
@@ -4488,7 +4488,7 @@
     "macro_f1": 0.772178461596903,
     "weighted_f1": 0.9250159408046349,
     "balanced_accuracy": 0.7625760930561656,
-    "mean_inference_ms_per_track": 0.13813242087249428,
+    "mean_inference_ms_per_track": 0.14875705731443908,
     "class_names": [
       "alpha",
       "electron_positron",
@@ -4569,7 +4569,7 @@
     "macro_f1": 0.7823441263752363,
     "weighted_f1": 0.9118543429542929,
     "balanced_accuracy": 0.7895413366302055,
-    "mean_inference_ms_per_track": 0.29485788176934696,
+    "mean_inference_ms_per_track": 0.34860000000505886,
     "class_names": [
       "alpha",
       "electron_positron",

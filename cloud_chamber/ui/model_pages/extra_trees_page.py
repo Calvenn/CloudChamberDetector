@@ -46,6 +46,7 @@ def render(config: dict, context: PageContext) -> None:
         / "models"
         / "extra_trees_training_report.json"
     )
+    training_report = _load_saved_training_report(report_path, model_path)
 
 
     # =====================================================
@@ -67,7 +68,11 @@ def render(config: dict, context: PageContext) -> None:
 
     st.caption(
         "Model ready"
-        + (" · Saved evaluation report available" if report_path.exists() else "")
+        + (
+            " · Saved evaluation report available"
+            if training_report is not None
+            else " · Saved evaluation unavailable"
+        )
     )
 
 
@@ -75,15 +80,7 @@ def render(config: dict, context: PageContext) -> None:
     # 2. MODEL PERFORMANCE
     # =====================================================
 
-    training_report = None
-
-    if report_path.exists():
-
-        training_report = _normalise_training_report(json.loads(
-            report_path.read_text(
-                encoding="utf-8"
-            )
-        ))
+    if training_report is not None:
 
         validation = training_report["validation"]
 
@@ -1261,3 +1258,41 @@ def _normalise_training_report(report: dict) -> dict:
     if "validation" not in report and selected is not None:
         report["validation"] = selected.get("validation", {})
     return report
+
+
+def _load_saved_training_report(report_path: Path, model_path: Path) -> dict | None:
+    """Load evaluation evidence, falling back to metrics embedded in the model."""
+    candidate_paths = (report_path,)
+    for candidate_path in candidate_paths:
+        if candidate_path.is_file():
+            report = json.loads(candidate_path.read_text(encoding="utf-8"))
+            report["evaluation_source"] = str(candidate_path)
+            return _normalise_training_report(report)
+
+    if not model_path.is_file():
+        return None
+    bundle = load_extra_trees_model(model_path)
+    validation = bundle.get("validation_metrics")
+    final_test = bundle.get("final_test_metrics")
+    if not isinstance(validation, dict) or not isinstance(final_test, dict):
+        return None
+
+    parameters = dict(bundle.get("selected_parameters") or {})
+    candidate = {
+        "candidate": 1,
+        "parameters": parameters,
+        "validation": validation,
+    }
+    report = {
+        "method": "ExtraTreesClassifier",
+        "selection_metric": (
+            "validation macro F1; balanced accuracy and accuracy tie-breakers"
+        ),
+        "candidate_results": [candidate],
+        "selected_candidate": 1,
+        "selected_parameters": parameters,
+        "validation": validation,
+        "final_test": final_test,
+        "evaluation_source": f"embedded metrics in {model_path}",
+    }
+    return _normalise_training_report(report)
