@@ -10,7 +10,7 @@ import cv2
 import joblib
 import numpy as np
 
-from cloud_chamber.features import extract_track_features
+from cloud_chamber.feature_extraction.contour_features import extract_track_features
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS as TRACK_COLUMNS
 
 
@@ -18,6 +18,7 @@ FEATURE_COLUMNS = (*TRACK_COLUMNS, "contour_complexity", "bbox_extent", "skeleto
 
 
 def _skeleton_topology(mask: np.ndarray) -> tuple[int, int, int]:
+    """Count skeleton pixels, endpoints, and branch points in a contour mask."""
     working = mask.copy()
     maximum_dimension = max(working.shape, default=0)
     if maximum_dimension > 256:
@@ -53,6 +54,7 @@ def _skeleton_topology(mask: np.ndarray) -> tuple[int, int, int]:
 
 
 def contour_feature_vector(contour: np.ndarray, enhanced: np.ndarray) -> np.ndarray:
+    """Describe one contour using track and artefact-specific measurements."""
     x, y, width, height = cv2.boundingRect(contour)
     padding = 8
     left = max(0, x - padding)
@@ -94,6 +96,7 @@ def contour_feature_vector(contour: np.ndarray, enhanced: np.ndarray) -> np.ndar
 
 
 def candidate_matrix(contours: list[np.ndarray], enhanced: np.ndarray) -> np.ndarray:
+    """Build one consistently ordered feature row for every candidate contour."""
     if not contours:
         return np.empty((0, len(FEATURE_COLUMNS)), dtype=np.float64)
     return np.vstack([contour_feature_vector(contour, enhanced) for contour in contours])
@@ -101,6 +104,7 @@ def candidate_matrix(contours: list[np.ndarray], enhanced: np.ndarray) -> np.nda
 
 @lru_cache(maxsize=4)
 def load_model(path: str | Path) -> dict:
+    """Load a trained artefact-filter bundle and validate its structure."""
     bundle = joblib.load(Path(path).resolve())
     if tuple(bundle["feature_columns"]) != FEATURE_COLUMNS:
         raise ValueError("Saved artifact filter uses different feature columns")
@@ -108,6 +112,7 @@ def load_model(path: str | Path) -> dict:
 
 
 def filter_mask(mask: np.ndarray, enhanced: np.ndarray, bundle: dict) -> tuple[np.ndarray, dict]:
+    """Remove candidates whose learned particle probability is below threshold."""
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
         return mask.copy(), {"candidate_count": 0, "accepted_count": 0, "rejected_count": 0}

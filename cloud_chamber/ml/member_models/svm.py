@@ -17,7 +17,7 @@ import joblib
 import cv2
 import numpy as np
 
-from cloud_chamber.features import TrackFeatures
+from cloud_chamber.feature_extraction.contour_features import TrackFeatures
 
 
 FEATURE_COLUMNS = (

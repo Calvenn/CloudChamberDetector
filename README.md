@@ -78,12 +78,6 @@ summary. The PDF report retains the input source, model details, confidence
 threshold and important result information. Batch results remain visible in
 the application summary table.
 
-To test one image without the GUI:
-
-```powershell
-python -m cloud_chamber.cli analyse "path\to\image.jpg"
-```
-
 ## Shared code
 
 | File | Responsibility |
@@ -137,7 +131,7 @@ declared MLP candidates and select the best one using validation macro F1:
 
 ```powershell
 python -m pip install -r requirements.txt
-python scripts/train_mlp.py
+python scripts/training/train_mlp.py
 ```
 
 The command saves:
@@ -147,9 +141,9 @@ The command saves:
   result, selected candidate, confusion matrix and final-test metrics.
 - `data/features/shared/muller/*.csv`: shared reproducible contour features
   used by MLP, SVM, Decision Tree and Extra Trees. Missing files can be built
-  independently with `python scripts/build_shared_features.py`.
+  independently with `python scripts/data/build_shared_features.py`.
 
-Use `python scripts/train_mlp.py --rebuild-features` only after changing the
+Use `python scripts/training/train_mlp.py --rebuild-features` only after changing the
 shared feature extraction. In the GUI, process an input on **Shared Processing
 Pipeline**, open **MLP**, then select **Classify and create MLP report**.
 
@@ -222,10 +216,10 @@ For the provided MLP implementation, members normally do not specify the files
 one at a time. Run:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\train_mlp.py --rebuild-features
+.\.venv\Scripts\python.exe scripts\training\train_mlp.py --rebuild-features
 ```
 
-`scripts/train_mlp.py` automatically loops over `development`, `validation`
+`scripts/training/train_mlp.py` automatically loops over `development`, `validation`
 and `final_test`, reads the correct `annotations_coco.json`, trains only on the
 development feature table, selects the candidate on validation, and evaluates
 the selected model on final test. Other model members should follow the same

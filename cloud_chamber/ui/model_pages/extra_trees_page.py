@@ -5,7 +5,7 @@ from pathlib import Path
 import zipfile
 import plotly.graph_objects as go
 import streamlit as st
-from cloud_chamber.calibration import detect_chamber_corners
+from cloud_chamber.image_processing.calibration import detect_chamber_corners
 from cloud_chamber.ml.member_models.extra_trees import (build_visual_report as build_extra_trees_visual_report, encode_report_csv as encode_extra_trees_report_csv, encode_report_png as encode_extra_trees_report_png, load_model as load_extra_trees_model, predict_tracks as predict_extra_trees_tracks, summarise_predictions as summarise_extra_trees_predictions)
 from cloud_chamber.reporting import (
     assess_all_contours,

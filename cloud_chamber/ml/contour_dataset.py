@@ -11,15 +11,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from cloud_chamber.enhancement import enhance_image
-from cloud_chamber.features import extract_track_features
-from cloud_chamber.calibration import (
+from cloud_chamber.image_processing.enhancement import enhance_image
+from cloud_chamber.feature_extraction.contour_features import extract_track_features
+from cloud_chamber.image_processing.calibration import (
     DEFAULT_PROCESSING_SIZE,
     extract_roi,
     select_and_scale_roi,
 )
 from cloud_chamber.ml.member_models.mlp import FEATURE_COLUMNS
-from cloud_chamber.segmentation import scale_pixel_parameters, segment_tracks
+from cloud_chamber.image_processing.segmentation import scale_pixel_parameters, segment_tracks
 
 
 def decode_uncompressed_rle(segmentation: dict) -> np.ndarray:

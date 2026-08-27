@@ -458,7 +458,7 @@ def render(context: PageContext) -> None:
             config = st.session_state.get("config")
             if not config:
                 try:
-                    from cloud_chamber.config import load_config
+                    from cloud_chamber.core.config import load_config
                     config = load_config()
                 except:
                     config = {}

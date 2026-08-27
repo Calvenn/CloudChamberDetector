@@ -14,7 +14,31 @@ dependencies = [
     "streamlit>=1.40,<2",
     "scikit-learn>=1.7,<2",
     "joblib>=1.4,<2",
+    "torch>=2.4,<3",
+    "pandas>=2.2,<3",
+    "plotly>=5,<7",
+    "matplotlib>=3.9,<4",
+    "reportlab>=4,<5",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "ruff>=0.9,<1",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+extend-exclude = ["data", "models", "results"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
 
 [tool.setuptools.packages.find]
 include = ["cloud_chamber*"]
