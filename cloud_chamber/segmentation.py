@@ -65,7 +65,7 @@ def segment_tracks(
     settings: dict[str, Any],
     roi_margins: dict[str, float] | None = None,
 ) -> SegmentationResult:
-    """Segment bright particle tracks and return their external contours."""
+    """Threshold a white-top-hat image and return particle-track contours."""
     if enhanced_image.ndim != 2 or enhanced_image.dtype != np.uint8:
         raise ValueError("Segmentation input must be an 8-bit grayscale image")
     threshold_method = str(
@@ -78,13 +78,10 @@ def segment_tracks(
         )
 
     started = perf_counter()
+    # White top-hat is prepared by ``enhance_image``. Segmentation begins at
+    # Otsu-guided hysteresis and must not apply the transformation twice.
     top_hat_size = int(settings["top_hat_kernel"])
-    top_hat_kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (top_hat_size, top_hat_size)
-    )
-    local_bright = cv2.morphologyEx(
-        enhanced_image, cv2.MORPH_TOPHAT, top_hat_kernel
-    )
+    local_bright = enhanced_image
     otsu_value, _ = cv2.threshold(
         local_bright, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
@@ -384,7 +381,6 @@ def segment_tracks(
         contours=final_contours,
         processing_time_ms=(perf_counter() - started) * 1000.0,
         intermediate_images={
-            "local_bright_tracks": local_bright,
             "region_of_interest": roi_mask,
             "threshold": threshold_mask,
             "thin_line_candidates": thin_line_mask,

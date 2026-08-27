@@ -29,6 +29,12 @@ class EnhancementResult:
     grey: np.ndarray
     denoised: np.ndarray
     enhanced: np.ndarray
+    local_contrast: np.ndarray | None = None
+
+    @property
+    def segmentation_input(self) -> np.ndarray:
+        """Return the white-top-hat image prepared for thresholding."""
+        return self.local_contrast if self.local_contrast is not None else self.enhanced
 
 
 @dataclass

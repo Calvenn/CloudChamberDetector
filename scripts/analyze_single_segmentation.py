@@ -47,11 +47,11 @@ def main() -> int:
     source_shape = image.shape[:2]
     size = (int(config["spatial_scaling"]["processing_width"]), int(config["spatial_scaling"]["processing_height"]))
     normalisation = select_and_scale_roi(image, target_size=size)
-    enhanced = enhance_image(normalisation.image, config["enhancement"]).enhanced
     profile = config["segmentation"]["roi_profiles"]["external_muller"]
     settings = {**config["segmentation"], **{k: v for k, v in profile.items() if k not in ("left", "right", "top", "bottom")}}
     settings = scale_pixel_parameters(settings, int(config["spatial_scaling"]["pixel_parameter_reference_size"]), size)
-    segmented = segment_tracks(enhanced, settings)
+    enhancement = enhance_image(normalisation.image, config["enhancement"], settings)
+    segmented = segment_tracks(enhancement.segmentation_input, settings)
     truth_masks = [
         _scale_label_mask(annotation_to_mask(item, source_shape), normalisation.coordinates, size) > 0
         for item in annotations
