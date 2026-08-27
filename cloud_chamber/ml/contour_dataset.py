@@ -225,9 +225,13 @@ def build_segmented_feature_csv(
         else:
             normalisation = select_and_scale_roi(image, target_size=target_size)
             image = normalisation.image
-            enhanced = enhance_image(image, config["enhancement"])
+            enhanced = enhance_image(
+                image,
+                config["enhancement"],
+                segmentation_settings,
+            )
             segmented = segment_tracks(
-                enhanced.enhanced, segmentation_settings, source_margins
+                enhanced.segmentation_input, segmentation_settings, source_margins
             )
             measured = extract_track_features(
                 segmented.binary_mask,

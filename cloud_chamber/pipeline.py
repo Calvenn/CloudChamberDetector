@@ -52,14 +52,15 @@ def save_pipeline_images(
     images = {
         "01_grey.png": result.enhancement.grey,
         "02_denoised.png": result.enhancement.denoised,
-        "03_threshold.png": result.segmentation.intermediate_images["threshold"],
-        "04_morphological_opening.png": result.segmentation.intermediate_images[
+        "03_white_top_hat.png": result.enhancement.segmentation_input,
+        "04_threshold.png": result.segmentation.intermediate_images["threshold"],
+        "05_morphological_opening.png": result.segmentation.intermediate_images[
             "morphological_opening"
         ],
-        "05_morphological_closing.png": result.segmentation.intermediate_images[
+        "06_morphological_closing.png": result.segmentation.intermediate_images[
             "morphological_closing"
         ],
-        "06_segmentation_mask.png": result.segmentation.binary_mask,
+        "07_segmentation_mask.png": result.segmentation.binary_mask,
         **{
             f"intermediate_{_safe_name(name)}.png": image
             for name, image in result.segmentation.intermediate_images.items()

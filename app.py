@@ -174,25 +174,25 @@ def _shared_pipeline_page(config: dict) -> None:
             caption="Automatic overlapping tile boundaries",
         )
         st.dataframe(result["tile_metadata"], use_container_width=True, hide_index=True)
-    st.header("Grayscale conversion and Gaussian filtering")
-    columns = st.columns(3)
+    st.header("Grayscale, Gaussian and white top-hat enhancement")
+    columns = st.columns(4)
     columns[0].image(_bgr_to_rgb(analysis_image), caption="Full processing image")
     columns[1].image(enhancement.grey, caption="Grayscale")
     columns[2].image(enhancement.denoised, caption="Gaussian filtered")
+    columns[3].image(
+        enhancement.segmentation_input,
+        caption="White top-hat enhanced",
+    )
 
     st.header("Thresholding, morphology and contour detection")
     intermediate = segmentation.intermediate_images
-    columns = st.columns(4)
-    columns[0].image(
-        intermediate["local_bright_tracks"],
-        caption="Morphological Operation: White top-hat",
-    )
-    columns[1].image(intermediate["threshold"], caption="Otsu + hysteresis thresholding")
-    columns[2].image(
+    columns = st.columns(3)
+    columns[0].image(intermediate["threshold"], caption="Otsu-guided hysteresis")
+    columns[1].image(
         intermediate["morphological_closing"],
         caption="Morphological operation: Closing",
     )
-    columns[3].image(
+    columns[2].image(
         segmentation.binary_mask,
         caption="Contour detection and filtering",
     )
@@ -717,9 +717,13 @@ def _process_pipeline_image(
         int(config["spatial_scaling"].get("pixel_parameter_reference_size", 1920)),
         target_size,
     )
-    enhancement = enhance_image(analysis_image, config["enhancement"])
+    enhancement = enhance_image(
+        analysis_image,
+        config["enhancement"],
+        segmentation_settings,
+    )
     segmentation = segment_tracks(
-        enhancement.enhanced,
+        enhancement.segmentation_input,
         segmentation_settings,
         roi_margins,
     )
@@ -908,15 +912,22 @@ def _process_tiled_pipeline_image(
     }
     masks = []
     intermediate_masks: dict[str, list[np.ndarray]] = {}
-    sums = {name: np.zeros(processing_copy.shape[:2], dtype=np.float32) for name in ("grey", "denoised", "enhanced")}
+    sums = {
+        name: np.zeros(processing_copy.shape[:2], dtype=np.float32)
+        for name in ("grey", "denoised", "enhanced", "local_contrast")
+    }
     counts = np.zeros(processing_copy.shape[:2], dtype=np.float32)
     total_processing_ms = 0.0
     tile_previews = []
     for tile in tiles:
         scaled_tile, _, _ = spatial_scale_tile(tile.image, target_size)
-        enhancement = enhance_image(scaled_tile, config["enhancement"])
+        enhancement = enhance_image(
+            scaled_tile,
+            config["enhancement"],
+            segmentation_settings,
+        )
         segmentation = segment_tracks(
-            enhancement.enhanced, segmentation_settings, tile_margins
+            enhancement.segmentation_input, segmentation_settings, tile_margins
         )
         masks.append(segmentation.binary_mask)
         total_processing_ms += segmentation.processing_time_ms
@@ -936,6 +947,9 @@ def _process_tiled_pipeline_image(
         grey=np.clip(sums["grey"] / safe_counts, 0, 255).astype(np.uint8),
         denoised=np.clip(sums["denoised"] / safe_counts, 0, 255).astype(np.uint8),
         enhanced=np.clip(sums["enhanced"] / safe_counts, 0, 255).astype(np.uint8),
+        local_contrast=np.clip(
+            sums["local_contrast"] / safe_counts, 0, 255
+        ).astype(np.uint8),
     )
     merged_mask = merge_tile_masks(
         processing_copy.shape,

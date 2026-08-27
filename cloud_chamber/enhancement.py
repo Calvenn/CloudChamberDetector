@@ -13,8 +13,9 @@ from cloud_chamber.models import EnhancementResult
 def enhance_image(
     image: np.ndarray,
     settings: dict[str, Any],
+    segmentation_settings: dict[str, Any] | None = None,
 ) -> EnhancementResult:
-    """Apply the fixed shared enhancement pipeline to one image."""
+    """Apply grayscale, Gaussian and optional white-top-hat enhancement."""
     if image is None or image.size == 0:
         raise ValueError("Input image is empty")
 
@@ -30,10 +31,29 @@ def enhance_image(
         sigmaX=sigma,
     )
 
+    # White top-hat is conceptually an enhancement operation. Keep the
+    # Gaussian result for the established intensity-feature contract and expose
+    # local contrast separately as the thresholding input.
+    local_contrast = None
+    if segmentation_settings is not None:
+        top_hat_size = int(segmentation_settings["top_hat_kernel"])
+        if top_hat_size < 1 or top_hat_size % 2 == 0:
+            raise ValueError("top_hat_kernel must be a positive odd number")
+        top_hat_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (top_hat_size, top_hat_size),
+        )
+        local_contrast = cv2.morphologyEx(
+            denoised,
+            cv2.MORPH_TOPHAT,
+            top_hat_kernel,
+        )
+
     return EnhancementResult(
         grey=grey,
         denoised=denoised,
         enhanced=denoised,
+        local_contrast=local_contrast,
     )
 
 
