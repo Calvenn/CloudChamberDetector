@@ -306,11 +306,38 @@ def predict_tracks(model_bundle: dict, features: Iterable[TrackFeatures]) -> lis
     ]
 
 
+def _match_component_to_box(
+    stats: np.ndarray | None,
+    box: tuple[int, int, int, int],
+    used_components: set[int],
+) -> int | None:
+    """Return the unused binary-mask component with the greatest box IoU."""
+    if stats is None or len(stats) <= 1:
+        return None
+    x, y, width, height = box
+    best_id = None
+    best_iou = 0.0
+    for component_id in range(1, len(stats)):
+        if component_id in used_components:
+            continue
+        cx, cy, cw, ch, _ = (int(value) for value in stats[component_id])
+        intersection_width = max(0, min(x + width, cx + cw) - max(x, cx))
+        intersection_height = max(0, min(y + height, cy + ch) - max(y, cy))
+        intersection = intersection_width * intersection_height
+        union = width * height + cw * ch - intersection
+        iou = intersection / union if union > 0 else 0.0
+        if iou > best_iou:
+            best_iou = iou
+            best_id = component_id
+    return best_id if best_iou > 0 else None
+
+
 def build_visual_report(
     image: np.ndarray,
     features: Iterable[TrackFeatures],
     predictions: list[dict],
     confidence_threshold: float = 0.60,
+    instance_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, list[dict]]:
     """Draw classified tracks and build the matching tabular report."""
     feature_list = list(features)
@@ -318,6 +345,17 @@ def build_visual_report(
         raise ValueError("Feature and prediction counts must be equal")
 
     overlay = image.copy()
+    
+    component_labels = None
+    component_stats = None
+    used_components: set[int] = set()
+    if instance_mask is not None:
+        if instance_mask.shape != image.shape[:2]:
+            raise ValueError("Instance mask and report image must have equal size")
+        _, component_labels, component_stats, _ = cv2.connectedComponentsWithStats(
+            (instance_mask > 0).astype(np.uint8), connectivity=8
+        )
+
     rows = []
     for track, prediction in zip(feature_list, predictions, strict=True):
         x, y, width, height = track.bounding_box
@@ -327,7 +365,27 @@ def build_visual_report(
             prediction["predicted_class"], (255, 255, 255)
         )
 
-        cv2.rectangle(overlay, (x, y), (x + width, y + height), colour, 2)
+        component_id = _match_component_to_box(
+            component_stats, (x, y, width, height), used_components
+        )
+        if component_id is not None and component_labels is not None:
+            used_components.add(component_id)
+            region = component_labels == component_id
+            colour_array = np.asarray(colour, dtype=np.float32)
+            overlay[region] = np.clip(
+                overlay[region].astype(np.float32) * 0.48 + colour_array * 0.52,
+                0,
+                255,
+            ).astype(np.uint8)
+            outlines, _ = cv2.findContours(
+                region.astype(np.uint8) * 255,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
+            )
+            cv2.drawContours(overlay, outlines, -1, colour, 2, cv2.LINE_AA)
+        else:
+            cv2.rectangle(overlay, (x, y), (x + width, y + height), colour, 2)
+
         status = "Uncertain" if uncertain else "Accepted"
         label = (
             f"T{track.track_id}: {prediction['particle_type']} "
