@@ -124,8 +124,8 @@ def render(context: PageContext) -> None:
     st.markdown("---")
     st.subheader("Model Performance")
 
-    if training_report and "segmented_final_test" in training_report:
-        seg_test = training_report["segmented_final_test"]
+    if training_report and "final_test" in training_report:
+        seg_test = training_report["final_test"]
         clf_rep = seg_test.get("classification_report", {})
         
         # Pull Metrics from json report
@@ -140,7 +140,7 @@ def render(context: PageContext) -> None:
         svm_info = st.session_state.get("svm_session_info") or {}
         live_proc_s = svm_info.get("processing_time_s", None)
         if avg_track_ms > 0:
-            proc_time_str = f"{avg_track_ms:.2f} ms/trk"
+            proc_time_str = f"{avg_track_ms:.3f} ms/trk"
         elif total_test_ms > 0:
             proc_time_str = f"{total_test_ms:.1f} ms"
         elif live_proc_s is not None:
@@ -1386,8 +1386,8 @@ def _generate_pdf_report(
 
     # Page 3: Model Evaluation Performance & Methodology
     story.append(Paragraph("5. SVM Model Evaluation & Performance Metrics", h2_style))
-    if training_report and "segmented_final_test" in training_report:
-        seg_test = training_report["segmented_final_test"]
+    if training_report and "final_test" in training_report:
+        seg_test = training_report["final_test"]
         perf_data = [
             [Paragraph("<b>Test Accuracy:</b>", body_style), Paragraph(f"{seg_test.get('accuracy', 0):.1%}", body_style), Paragraph("<b>Balanced Accuracy:</b>", body_style), Paragraph(f"{seg_test.get('balanced_accuracy', 0):.1%}", body_style)],
             [Paragraph("<b>Macro F1-Score:</b>", body_style), Paragraph(f"{seg_test.get('macro_f1', 0):.1%}", body_style), Paragraph("<b>Weighted F1-Score:</b>", body_style), Paragraph(f"{seg_test.get('weighted_f1', 0):.1%}", body_style)]
