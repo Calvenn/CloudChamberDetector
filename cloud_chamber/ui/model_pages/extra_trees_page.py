@@ -60,7 +60,7 @@ def render(config: dict, context: PageContext) -> None:
         )
 
         st.code(
-            "python scripts/train_extra_trees.py"
+            "python scripts/training/train_extra_trees.py"
         )
 
         return

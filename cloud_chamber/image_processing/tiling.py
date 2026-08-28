@@ -53,6 +53,8 @@ class TileMetadata:
 
 @dataclass(frozen=True)
 class ImageTile:
+    """Processing-sized tile paired with coordinates for full-image merging."""
+
     image: np.ndarray
     metadata: TileMetadata
 
@@ -255,4 +257,3 @@ def draw_tile_boundaries(image: np.ndarray, tiles: list[ImageTile]) -> np.ndarra
             cv2.LINE_AA,
         )
     return preview
-

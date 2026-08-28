@@ -126,6 +126,8 @@ def split_dataset(
     output: Path,
     overwrite: bool,
 ) -> dict[str, Any]:
+    """Create COCO partitions without placing one recording in multiple splits."""
+
     if not annotations_path.is_file():
         raise FileNotFoundError(f"COCO annotations not found: {annotations_path}")
     with annotations_path.open("r", encoding="utf-8") as handle:
@@ -303,4 +305,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

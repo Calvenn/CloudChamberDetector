@@ -1,7 +1,8 @@
 """Decision Tree classifier for contour-based track features.
 
 Per project convention, training, validation, prediction and model-saving
-functions for this classifier live only in this file. scripts/train_decision_tree.py
+functions for this classifier live only in this file. The
+scripts/training/train_decision_tree.py command
 is a thin CLI wrapper: it parses arguments, builds or loads the shared
 feature CSVs via cloud_chamber.ml.contour_dataset, calls the functions
 defined here, and writes the resulting model and JSON report to disk. It
@@ -251,12 +252,12 @@ def build_training_report(
 
 
 def load_model(model_path: str | Path) -> dict:
-    """Load the Decision Tree bundle saved by save_model / scripts/train_decision_tree.py."""
+    """Load the Decision Tree bundle saved by the training command."""
     path = Path(model_path)
     if not path.is_file():
         raise FileNotFoundError(
             f"Decision Tree model not found: {path}. "
-            "Run scripts/train_decision_tree.py first."
+            "Run scripts/training/train_decision_tree.py first."
         )
     bundle = joblib.load(path)
     if tuple(bundle["feature_columns"]) != FEATURE_COLUMNS:
@@ -268,7 +269,7 @@ def load_model(model_path: str | Path) -> dict:
         raise ValueError(
             "Saved Decision Tree estimator and feature-column metadata disagree "
             f"(estimator={expected_features}, metadata={len(FEATURE_COLUMNS)}). "
-            "Retrain it with scripts/train_decision_tree.py."
+            "Retrain it with scripts/training/train_decision_tree.py."
         )
     return bundle
 
