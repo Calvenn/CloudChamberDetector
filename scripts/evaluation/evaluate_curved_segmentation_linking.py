@@ -44,6 +44,8 @@ def _summarise(path: Path, annotation_path: Path, allowed: set[str]) -> dict:
 
 
 def main() -> int:
+    """Measure the effect of curved-fragment linking on held-out tracks."""
+
     config = load_config(PROJECT_ROOT / "config.yaml")
     allowed = set(config["classification"]["supported_classes"])
     annotations = (
@@ -80,4 +82,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

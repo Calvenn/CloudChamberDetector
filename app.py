@@ -1,4 +1,4 @@
-"""Streamlit composition root for the cloud-chamber application.
+﻿"""Streamlit composition root for the cloud-chamber application.
 
 The entry point owns only application wiring. Image-processing behaviour lives
 in ``cloud_chamber.ui.shared_pipeline``, while every classifier owns its page.
@@ -21,6 +21,7 @@ from cloud_chamber.ui.model_pages import (
 from cloud_chamber.ui.model_pages.context import PageContext
 from cloud_chamber.ui.navigation import (
     COMPARISON_PAGE,
+    MLP_PAGE,
     PAGES,
     SHARED_PIPELINE_PAGE,
     render_selected_page,
@@ -31,7 +32,6 @@ def main() -> None:
     """Configure Streamlit and render the page selected by the user."""
     st.set_page_config(
         page_title="Cloud Chamber Particle Classification",
-        page_icon="☁️",
         layout="wide",
     )
     config = load_config()
@@ -53,10 +53,10 @@ def _build_page_handlers() -> dict:
     )
     return {
         SHARED_PIPELINE_PAGE: shared_pipeline.render,
-        "CNN": lambda config: cnn_page.render(config, context),
-        "SVM": lambda _config: svm_page.render(context),
+        "Convolutional Neural Network": lambda config: cnn_page.render(config, context),
+        "Support Vector Machine": lambda _config: svm_page.render(context),
         "Decision Tree": lambda _config: decision_tree_page.render(context),
-        "MLP": lambda config: mlp_page.render(config, context),
+        "Multilayer Perceptron": lambda config: mlp_page.render(config, context),
         "Extremely Randomized Trees": lambda config: extra_trees_page.render(
             config, context
         ),

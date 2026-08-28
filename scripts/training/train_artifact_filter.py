@@ -137,6 +137,8 @@ def _metrics(labels: np.ndarray, probabilities: np.ndarray, threshold: float) ->
 
 
 def main() -> int:
+    """Train, evaluate and save the domain-specific artefact filter."""
+
     args = parse_args()
     config = load_config(PROJECT_ROOT / "config.yaml")
     seed = int(config["project"]["random_seed"])

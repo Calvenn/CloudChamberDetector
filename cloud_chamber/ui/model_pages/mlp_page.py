@@ -11,7 +11,7 @@ from .mlp_reporting import agreement_text, render_ensemble_agreement
 
 def render(config: dict, context: PageContext) -> None:
     """Render only the Multilayer Perceptron classification workflow."""
-    st.title("MLP Classifier")
+    st.title("Multilayer Perceptron (MLP Ensemble) Classifier")
 
     model_key = "mlp"
     state_key = f"{model_key}_predictions"

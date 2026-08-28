@@ -49,6 +49,8 @@ KNOWN_GROUP_PREFIXES = tuple(
 
 
 def parse_args() -> argparse.Namespace:
+    """Read the converted annotation source and split output location."""
+
     parser = argparse.ArgumentParser(
         description="Split converted Müller COCO data by recording source."
     )
@@ -73,10 +75,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def project_path(path: Path, project_root: Path) -> Path:
+    """Resolve a relative path from the repository root."""
+
     return path.resolve() if path.is_absolute() else (project_root / path).resolve()
 
 
 def recording_group(file_name: str) -> str:
+    """Return the recording identifier used to prevent split leakage."""
+
     stem = PurePosixPath(file_name).stem
     for prefix in KNOWN_GROUP_PREFIXES:
         if stem.startswith(prefix):
@@ -85,6 +91,8 @@ def recording_group(file_name: str) -> str:
 
 
 def group_to_split() -> dict[str, str]:
+    """Map every configured recording group to exactly one partition."""
+
     mapping: dict[str, str] = {}
     for split_name, groups in DEFAULT_SPLIT_GROUPS.items():
         for group in groups:
@@ -95,11 +103,15 @@ def group_to_split() -> dict[str, str]:
 
 
 def output_file_name(original_name: str) -> str:
+    """Build the portable image path stored in the split COCO file."""
+
     image_name = PurePosixPath(original_name).name
     return f"../../external_dataset/images/{image_name}"
 
 
 def prepare_outputs(output: Path, overwrite: bool) -> dict[str, dict[str, Path]]:
+    """Create split destinations while protecting existing outputs."""
+
     paths: dict[str, dict[str, Path]] = {}
     for split_name in DEFAULT_SPLIT_GROUPS:
         split_dir = output / split_name
@@ -290,6 +302,8 @@ def split_dataset(
 
 
 def main() -> int:
+    """Create leakage-safe Müller development, validation and test splits."""
+
     args = parse_args()
     project_root = Path(__file__).resolve().parents[2]
     annotations = project_path(args.annotations, project_root)

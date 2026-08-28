@@ -15,6 +15,8 @@ from cloud_chamber.ml.shared_features import DEFAULT_FEATURE_DIR, ensure_shared_
 
 
 def parse_args() -> argparse.Namespace:
+    """Read dataset and output locations for shared feature generation."""
+
     parser = argparse.ArgumentParser(description="Build shared contour features")
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "config.yaml")
     parser.add_argument(
@@ -35,6 +37,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Generate the common contour-feature tables used by classifiers."""
+
     args = parse_args()
     config = load_config(args.config)
     ensure_shared_features(
@@ -53,4 +57,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

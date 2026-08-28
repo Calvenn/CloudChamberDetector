@@ -142,6 +142,8 @@ def _write_manifest(
 
 
 def main() -> int:
+    """Prepare the primary dataset using the configured recording split."""
+
     parser = argparse.ArgumentParser(
         description=(
             "Extract only raw cloud-chamber images and create session-safe "

@@ -32,6 +32,8 @@ SPLITS = ("development", "validation", "final_test")
 
 
 def parse_args() -> argparse.Namespace:
+    """Read Decision Tree data, model and feature-cache locations."""
+
     parser = argparse.ArgumentParser(description="Train contour-feature Decision Tree")
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "config.yaml")
     parser.add_argument(
@@ -128,6 +130,8 @@ def _decision_tree_matrix(raw_matrix: np.ndarray) -> np.ndarray:
 
 
 def main() -> int:
+    """Select, retrain and save the contour-feature Decision Tree."""
+
     args = parse_args()
     config = load_config(args.config)
     seed = int(config["project"]["random_seed"])
@@ -209,4 +213,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

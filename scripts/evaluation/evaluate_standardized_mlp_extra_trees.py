@@ -68,6 +68,8 @@ def _evaluate(bundle: dict, matrix: np.ndarray, labels: np.ndarray) -> tuple[dic
 
 
 def main() -> int:
+    """Compare MLP and Extra Trees on the same prepared evaluation records."""
+
     config = load_config(PROJECT_ROOT / "config.yaml")
     allowed = set(config["classification"]["supported_classes"])
     output_dir = PROJECT_ROOT / "results" / "standardized_comparison"
@@ -162,4 +164,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

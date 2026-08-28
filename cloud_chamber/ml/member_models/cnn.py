@@ -801,6 +801,8 @@ def save_model(model: nn.Module, model_path: str | Path, metadata: dict[str, Any
 
 
 def parse_args() -> argparse.Namespace:
+    """Read CNN training paths and hyperparameters from the command line."""
+
     parser = argparse.ArgumentParser(description="Train a CNN for cloud-chamber particle classification")
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT, help="External dataset split root.")
     parser.add_argument("--primary-dataset-root", type=Path, default=PROJECT_ROOT / "dataset" / "primary_dataset_split", help="Primary dataset root containing annotations_coco.json.")
@@ -812,6 +814,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """Train the CNN and save its model bundle and evaluation report."""
+
     args = parse_args()
     config = load_config(PROJECT_ROOT / "config.yaml")
     random_seed = int(config["project"]["random_seed"])

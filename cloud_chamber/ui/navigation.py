@@ -11,11 +11,13 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 
+MLP_PAGE = "Multilayer Perceptron"
+
 MODEL_PAGES = {
-    "CNN": "Convolutional Neural Network",
-    "SVM": "Support Vector Machine",
+    "Convolutional Neural Network": "Convolutional Neural Network",
+    "Support Vector Machine": "Support Vector Machine",
     "Decision Tree": "Decision Tree",
-    "MLP": "Multilayer Perceptron",
+    "Multilayer Perceptron": "Multilayer Perceptron (MLP Ensemble)",
     "Extremely Randomized Trees": "Extremely Randomized Trees",
 }
 

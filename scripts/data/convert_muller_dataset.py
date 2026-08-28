@@ -51,11 +51,15 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
 
 @dataclass(frozen=True)
 class ImageMaskPair:
+    """Matched Müller image and semantic-mask files."""
+
     image_path: Path
     mask_path: Path
 
 
 def parse_args() -> argparse.Namespace:
+    """Read conversion paths, thresholds and fragment-merging options."""
+
     parser = argparse.ArgumentParser(
         description=(
             "Convert Müller five-channel semantic masks into COCO instance "
@@ -121,10 +125,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_from_project(path: Path, project_root: Path) -> Path:
+    """Resolve a relative path from the repository root."""
+
     return path.resolve() if path.is_absolute() else (project_root / path).resolve()
 
 
 def collect_pairs(source: Path) -> list[ImageMaskPair]:
+    """Match every source image with its corresponding mask file."""
+
     image_dir = source / "images"
     mask_dir = source / "masks"
     if not image_dir.is_dir():
@@ -165,6 +173,8 @@ def collect_pairs(source: Path) -> list[ImageMaskPair]:
 
 
 def load_muller_mask(mask_path: Path) -> np.ndarray:
+    """Load and validate one five-channel Müller semantic mask."""
+
     with np.load(mask_path, allow_pickle=False) as archive:
         if archive.files != ["arr_0"]:
             raise ValueError(
@@ -295,6 +305,8 @@ def connected_instances(
     proton_max_gap: float = 80.0,
     proton_max_angle: float = 25.0,
 ) -> tuple[list[tuple[np.ndarray, list[int], int]], int, int, int]:
+    """Build instances and optionally join collinear proton fragments."""
+
     binary = np.asarray(class_mask, dtype=np.uint8)
     component_count, component_map, stats, _ = cv2.connectedComponentsWithStats(
         binary,
@@ -349,6 +361,8 @@ def relative_image_name(image_path: Path, output: Path) -> str:
 
 
 def ensure_output_paths(output: Path, overwrite: bool) -> dict[str, Path]:
+    """Prepare outputs without silently replacing existing files."""
+
     paths = {
         "coco": output / "annotations_coco.json",
         "manifest": output / "manifest.csv",
@@ -375,6 +389,8 @@ def convert(
     proton_max_gap: float = 80.0,
     proton_max_angle: float = 25.0,
 ) -> dict[str, Any]:
+    """Convert and summarise Müller masks as COCO particle instances."""
+
     if min_area < 1:
         raise ValueError("--min-area must be at least 1")
     if not 0.0 <= threshold <= 1.0:
@@ -551,6 +567,8 @@ def convert(
 
 
 def main() -> int:
+    """Run Müller conversion from command-line arguments."""
+
     args = parse_args()
     project_root = Path(__file__).resolve().parents[2]
     source = resolve_from_project(args.source, project_root)
@@ -576,4 +594,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

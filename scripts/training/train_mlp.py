@@ -58,6 +58,8 @@ PARAMETER_CANDIDATES = (
 
 
 def parse_args() -> argparse.Namespace:
+    """Read MLP data, model and feature-cache locations."""
+
     parser = argparse.ArgumentParser(description="Train contour-feature MLP")
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "config.yaml")
     parser.add_argument(
@@ -204,6 +206,8 @@ def fit_with_balancing(
 
 
 def evaluate(model, matrix: np.ndarray, labels: np.ndarray) -> dict:
+    """Calculate overall, balanced and per-class MLP evaluation evidence."""
+
     from sklearn.metrics import (
         accuracy_score,
         balanced_accuracy_score,
@@ -234,6 +238,8 @@ def evaluate(model, matrix: np.ndarray, labels: np.ndarray) -> dict:
 
 
 def main() -> int:
+    """Select the MLP settings and train the final five-member ensemble."""
+
     args = parse_args()
     config = load_config(args.config)
     seed = int(config["project"]["random_seed"])
@@ -466,4 +472,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

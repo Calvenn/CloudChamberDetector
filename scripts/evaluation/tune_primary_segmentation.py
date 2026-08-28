@@ -120,6 +120,8 @@ def _evaluate(records: list[tuple[np.ndarray, list[np.ndarray]]], config: dict) 
 
 
 def main() -> int:
+    """Select primary-domain segmentation settings using validation data."""
+
     base = load_config(PROJECT_ROOT / "config.yaml")
     allowed = set(base["classification"]["supported_classes"])
     validation_records = _records("validation", allowed)
@@ -177,4 +179,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

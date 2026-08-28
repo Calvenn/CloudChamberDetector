@@ -207,6 +207,8 @@ def _evaluate_dataset(
 
 
 def main() -> int:
+    """Evaluate segmentation separately for the primary and Müller domains."""
+
     config = load_config(PROJECT_ROOT / "config.yaml")
     allowed = set(config["classification"]["supported_classes"])
     results = {}
@@ -247,4 +249,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

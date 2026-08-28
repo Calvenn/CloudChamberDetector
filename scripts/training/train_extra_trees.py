@@ -82,6 +82,8 @@ def _model(parameters: dict, seed: int) -> ExtraTreesClassifier:
 
 
 def main() -> int:
+    """Select, train and save the Extremely Randomized Trees classifier."""
+
     config = load_config(PROJECT_ROOT / "config.yaml")
     seed = int(config["project"]["random_seed"])
     allowed = set(config["classification"]["supported_classes"])
@@ -164,4 +166,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

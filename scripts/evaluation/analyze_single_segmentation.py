@@ -37,6 +37,8 @@ def _topology(mask: np.ndarray) -> tuple[int, int, int]:
 
 
 def main() -> int:
+    """Inspect segmentation behaviour for one representative test image."""
+
     config = load_config(PROJECT_ROOT / "config.yaml")
     annotations_path = PROJECT_ROOT / "dataset/external_dataset_split/final_test/annotations_coco.json"
     data = json.loads(annotations_path.read_text(encoding="utf-8"))
@@ -89,4 +91,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

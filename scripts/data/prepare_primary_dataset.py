@@ -43,6 +43,8 @@ SNAPSHOT_PATTERN = re.compile(r"_snapshot_(\d{2})\.(\d{2})_")
 
 @dataclass(frozen=True)
 class ImagePair:
+    """Original primary frame paired with its supplied annotated image."""
+
     session: str
     split: str
     sample_id: str
@@ -733,6 +735,8 @@ def _snapshot_sort_key(name: str) -> tuple[int, str]:
 
 
 def main() -> int:
+    """Prepare primary images and convert supplied boxes into annotations."""
+
     parser = argparse.ArgumentParser(
         description=(
             "Prepare the primary cloud-chamber dataset and convert supplied "
@@ -757,4 +761,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
