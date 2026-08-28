@@ -14,6 +14,8 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.yaml"
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
+    """Load YAML settings and reject missing or unsafe processing values."""
+
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration not found: {config_path}")

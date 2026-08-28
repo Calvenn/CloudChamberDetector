@@ -44,7 +44,7 @@ def load_model(model_path: str | Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(
             f"Extremely Randomized Trees model not found: {path}. "
-            "Run scripts/train_extra_trees.py first."
+            "Run scripts/training/train_extra_trees.py first."
         )
     bundle = joblib.load(path)
     if tuple(bundle["feature_columns"]) != FEATURE_COLUMNS:

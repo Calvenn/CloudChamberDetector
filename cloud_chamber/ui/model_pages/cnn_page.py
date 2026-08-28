@@ -1,3 +1,5 @@
+"""Streamlit dashboard for CNN evidence and live track classification."""
+
 from __future__ import annotations
 
 import json

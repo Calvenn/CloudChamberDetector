@@ -25,6 +25,8 @@ from cloud_chamber.ml.contour_dataset import annotation_to_mask
 
 
 def parse_args() -> argparse.Namespace:
+    """Read the target image domain and candidate-cache preference."""
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--domain",
@@ -212,4 +214,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

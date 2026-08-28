@@ -1,7 +1,8 @@
-"""Multilayer Perceptron classifier for contour-based track features.
+"""Five-member soft-voting MLP ensemble for contour-based track features.
 
-The saved object is a scikit-learn Pipeline. It contains both StandardScaler
-and MLPClassifier, preventing training/inference preprocessing differences.
+Each member is a fitted scikit-learn Pipeline containing a StandardScaler and
+MLPClassifier. The ensemble averages their class probabilities while preserving
+the fixed 16-feature contract used during training and inference.
 """
 
 from __future__ import annotations
@@ -71,8 +72,16 @@ class SoftVotingMLPEnsemble:
         self.classes_ = np.asarray(classes, dtype=object)
 
     def predict_proba(self, matrix: np.ndarray) -> np.ndarray:
-        return np.mean(
-            np.stack([model.predict_proba(matrix) for model in self.models]),
+        return np.mean(self.member_probabilities(matrix), axis=0)
+
+    def member_probabilities(self, matrix: np.ndarray) -> np.ndarray:
+        """Return one probability matrix per ensemble member.
+
+        Keeping the individual outputs makes ensemble agreement available for
+        reporting without changing the soft-voting prediction itself.
+        """
+        return np.stack(
+            [model.predict_proba(matrix) for model in self.models],
             axis=0,
         )
 
@@ -91,11 +100,11 @@ def features_to_matrix(features: Iterable[TrackFeatures]) -> np.ndarray:
 
 
 def load_model(model_path: str | Path):
-    """Load the scaler-plus-MLP pipeline saved by the training script."""
+    """Load the saved MLP ensemble and verify its feature-column contract."""
     path = Path(model_path)
     if not path.is_file():
         raise FileNotFoundError(
-            f"MLP model not found: {path}. Run scripts/train_mlp.py first."
+            f"MLP model not found: {path}. Run scripts/training/train_mlp.py first."
         )
     bundle = joblib.load(path)
     saved_columns = tuple(bundle["feature_columns"])
@@ -105,7 +114,7 @@ def load_model(model_path: str | Path):
             f"(saved={len(saved_columns)}, runtime={len(FEATURE_COLUMNS)}). "
             "If the model was just retrained, fully restart Streamlit so it "
             "reloads cloud_chamber.feature_extraction.contour_features and the MLP module. Otherwise, "
-            "retrain with scripts/train_mlp.py --rebuild-features."
+            "retrain with scripts/training/train_mlp.py --rebuild-features."
         )
     return bundle
 
@@ -119,7 +128,17 @@ def predict_tracks(model_bundle: dict, features: Iterable[TrackFeatures]) -> lis
 
     model = model_bundle["model"]
     started = perf_counter()
-    probabilities = model.predict_proba(matrix)
+    if isinstance(model, SoftVotingMLPEnsemble):
+        member_probabilities = model.member_probabilities(matrix)
+        probabilities = np.mean(member_probabilities, axis=0)
+        member_predictions = model.classes_[
+            np.argmax(member_probabilities, axis=2)
+        ]
+    else:
+        probabilities = model.predict_proba(matrix)
+        member_predictions = model.classes_[
+            np.argmax(probabilities, axis=1)
+        ][np.newaxis, :]
     predictions = model.classes_[np.argmax(probabilities, axis=1)]
     elapsed_per_track = (perf_counter() - started) * 1000.0 / len(matrix)
 
@@ -136,10 +155,22 @@ def predict_tracks(model_bundle: dict, features: Iterable[TrackFeatures]) -> lis
                     model.classes_, probability, strict=True
                 )
             },
+            "ensemble_agreement": {
+                "agreeing_members": int(
+                    np.sum(member_predictions[:, index] == label)
+                ),
+                "total_members": int(member_predictions.shape[0]),
+                "ratio": float(
+                    np.mean(member_predictions[:, index] == label)
+                ),
+                "member_predictions": [
+                    str(value) for value in member_predictions[:, index]
+                ],
+            },
         }
-        for track, label, probability in zip(
+        for index, (track, label, probability) in enumerate(zip(
             feature_list, predictions, probabilities, strict=True
-        )
+        ))
     ]
 
 

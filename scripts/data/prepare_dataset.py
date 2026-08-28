@@ -25,6 +25,8 @@ def prepare_dataset(
     archive_path: Path,
     output_root: Path,
 ) -> dict[str, object]:
+    """Extract usable primary images into recording-session-safe partitions."""
+
     if not archive_path.is_file():
         raise FileNotFoundError(f"Dataset archive not found: {archive_path}")
     output_root.mkdir(parents=True, exist_ok=True)
@@ -168,4 +170,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

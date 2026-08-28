@@ -7,6 +7,7 @@ import streamlit as st
 from cloud_chamber.ml.member_models.mlp import DISPLAY_NAMES, build_visual_report, encode_report_csv, encode_report_png, load_model, predict_tracks
 from cloud_chamber.reporting import assess_all_contours, build_summary, encode_pdf_report, make_traceability_metadata, reporting_status
 from .context import PageContext
+from .mlp_reporting import agreement_text, render_ensemble_agreement
 
 def render(config: dict, context: PageContext) -> None:
     """Render only the Multilayer Perceptron classification workflow."""
@@ -17,7 +18,7 @@ def render(config: dict, context: PageContext) -> None:
     quality_state_key = f"{model_key}_quality"
     batch_state_key = f"{model_key}_batch_results"
     model_path = Path("models/mlp_classifier.joblib")
-    train_command = "python scripts/train_mlp.py"
+    train_command = "python scripts/training/train_mlp.py"
     model_loader = load_model
     model_predict = predict_tracks
     model_viz = build_visual_report
@@ -304,6 +305,7 @@ def render(config: dict, context: PageContext) -> None:
         predictions=predictions,
         confidence_threshold=confidence_threshold,
     )
+    render_ensemble_agreement(predictions)
 
     st.subheader("Annotated classification overview")
     particle_options = [
@@ -613,7 +615,6 @@ def _render_mlp_model_performance(report_path: Path) -> None:
             },
         )
 
-
 def _render_particle_evidence(
     context: PageContext,
     binary_mask: np.ndarray,
@@ -623,6 +624,7 @@ def _render_particle_evidence(
     confidence_threshold: float,
     centimetres_per_pixel: float | None,
 ) -> None:
+    """Render paginated masks, probabilities, agreement and track features."""
     st.subheader("Particle evidence cards")
     items_per_page = 10
     page_count = max(1, (len(features) + items_per_page - 1) // items_per_page)
@@ -681,6 +683,7 @@ def _render_particle_evidence(
                 f"**Contour quality:** {quality['grade']} "
                 f"({quality['score']}/100)  \n"
                 f"**Reporting decision:** {decision}  \n"
+                f"**Ensemble agreement:** {agreement_text(prediction)}  \n"
                 f"**Local contrast:** {quality['local_contrast']:.1f}"
             )
             details[1].dataframe(

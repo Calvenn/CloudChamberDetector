@@ -409,7 +409,7 @@ def render(context: PageContext) -> None:
     model_path = Path("models/decision_tree_classifier.joblib")
     if not model_path.exists():
         st.warning(
-            "Train the model first: `python scripts/train_decision_tree.py`"
+            "Train the model first: `python scripts/training/train_decision_tree.py`"
         )
         return
 

@@ -262,6 +262,8 @@ def calibrate_image(
     reference_points: Iterable[Iterable[float]],
     rectification_points: Iterable[Iterable[float]] | None = None,
 ) -> CalibrationResult:
+    """Calculate physical scale and optionally rectify a four-corner region."""
+
     if image is None or image.size == 0:
         raise ValueError("Calibration input image is empty")
     if known_length_cm <= 0:
@@ -382,4 +384,3 @@ def _order_corners(points: np.ndarray) -> np.ndarray:
     if len(np.unique(ordered, axis=0)) != 4:
         raise ValueError("Detected chamber corners are ambiguous")
     return ordered
-
