@@ -17,7 +17,7 @@ import joblib
 import cv2
 import numpy as np
 
-from cloud_chamber.features import TrackFeatures
+from cloud_chamber.feature_extraction.contour_features import TrackFeatures
 
 
 # This order is the public interface between shared feature extraction and all
@@ -104,7 +104,7 @@ def load_model(model_path: str | Path):
             "Saved MLP uses a different feature-column contract "
             f"(saved={len(saved_columns)}, runtime={len(FEATURE_COLUMNS)}). "
             "If the model was just retrained, fully restart Streamlit so it "
-            "reloads cloud_chamber.features and the MLP module. Otherwise, "
+            "reloads cloud_chamber.feature_extraction.contour_features and the MLP module. Otherwise, "
             "retrain with scripts/train_mlp.py --rebuild-features."
         )
     return bundle

@@ -29,8 +29,8 @@ except ImportError as exc:  # pragma: no cover - dependency check for the user f
         "PyTorch is required for the CNN implementation. Install it with pip install torch."
     ) from exc
 
-from cloud_chamber.config import load_config
-from cloud_chamber.features import TrackFeatures
+from cloud_chamber.core.config import load_config
+from cloud_chamber.feature_extraction.contour_features import TrackFeatures
 from collections import Counter
 from cloud_chamber.ml.contour_dataset import annotation_to_mask
 
@@ -129,6 +129,8 @@ def _patch_tensor(patch: np.ndarray, augment: bool = False) -> torch.Tensor:
 
 @dataclass(frozen=True)
 class CocoTrackSample:
+    """One annotated source object before its image patch is prepared."""
+
     image_path: Path
     annotation: dict
     label: int
@@ -300,6 +302,7 @@ def build_dataloaders(
     dict[str, int],
     dict[str, dict[str, dict]],
 ]:
+    """Build reproducible loaders for ground-truth and segmented patches."""
     dataset_root = Path(dataset_root)
     primary_dataset_root = Path(primary_dataset_root)
     class_mapping = build_class_mapping()
@@ -333,7 +336,10 @@ def build_dataloaders(
         if not ground_truth_samples:
             raise ValueError(f"No supported image-patch samples found for {split}")
         def count_labels(items) -> dict[str, int]:
-            return dict(sorted(Counter(inverse_mapping[item.label] for item in items).items()))
+            """Count labels using the human-readable class names."""
+            counts = Counter(inverse_mapping[item.label] for item in items)
+            return dict(sorted(counts.items()))
+
         class_counts[split] = {
             "ground_truth": count_labels(ground_truth_samples),
             "segmented_augmentation": count_labels(segmented_samples),
@@ -357,8 +363,20 @@ def build_dataloaders(
         )
     return loaders, segmented_loaders, class_mapping, class_counts
 
-def evaluate_loader(model: nn.Module, loader: DataLoader, class_mapping: dict[str, int]) -> dict:
-    from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report, confusion_matrix, f1_score
+def evaluate_loader(
+    model: nn.Module,
+    loader: DataLoader,
+    class_mapping: dict[str, int],
+) -> dict:
+    """Measure predictions and class-aware metrics for one data split."""
+    from sklearn.metrics import (
+        accuracy_score,
+        balanced_accuracy_score,
+        classification_report,
+        confusion_matrix,
+        f1_score,
+    )
+
     model.eval()
     all_preds = []
     all_labels = []
@@ -399,6 +417,7 @@ def train_cnn(
     random_seed: int = 42,
     config: dict | None = None,
 ) -> dict[str, Any]:
+    """Train the CNN and retain the checkpoint selected on validation data."""
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
     loaders, segmented_loaders, class_mapping, class_counts = build_dataloaders(

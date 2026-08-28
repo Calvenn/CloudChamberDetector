@@ -4,6 +4,8 @@ import streamlit as st
 import cv2
 import numpy as np
 from collections import Counter
+import plotly.graph_objects as go
+import plotly.express as px
 from cloud_chamber.ml.member_models.decision_tree import (
     build_visual_report as decision_tree_build_visual_report,
     encode_report_png as decision_tree_encode_report_png,
@@ -83,6 +85,314 @@ def _build_gallery_montage(gallery_items, cols=5, thumb_size=100, gap=10):
     return canvas
 
 
+# ---------------------------------------------------------------------------
+# Colour palette shared across all performance charts
+# ---------------------------------------------------------------------------
+_PARTICLE_COLOURS = {
+    "Alpha": "#FF6B6B",
+    "Electron/Positron": "#4ECDC4",
+    "Proton": "#45B7D1",
+    "V-track": "#A78BFA",
+    "Unknown": "#94A3B8",
+}
+_DECISION_COLOURS = {
+    "Accepted": "#22C55E",
+    "Uncertain": "#F59E0B",
+    "Rejected": "#EF4444",
+    "Low quality": "#94A3B8",
+}
+_GRADE_COLOURS = {"A": "#22C55E", "B": "#84CC16", "C": "#F59E0B", "D": "#EF4444"}
+_PLOTLY_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(family="Inter, sans-serif", color="#E2E8F0"),
+    margin=dict(l=10, r=10, t=40, b=10),
+)
+
+
+def _colour_seq(labels: list[str], colour_map: dict, fallback_palette: list[str]) -> list[str]:
+    """Return a colour list aligned to `labels`, using `colour_map` when available."""
+    palette = [
+        "#60A5FA", "#F472B6", "#34D399", "#FBBF24",
+        "#A78BFA", "#FB923C", "#38BDF8", "#E879F9",
+    ]
+    colours: list[str] = []
+    fallback_idx = 0
+    for lbl in labels:
+        if lbl in colour_map:
+            colours.append(colour_map[lbl])
+        elif lbl in fallback_palette:
+            colours.append(fallback_palette[lbl])
+        else:
+            colours.append(palette[fallback_idx % len(palette)])
+            fallback_idx += 1
+    return colours
+
+
+def _render_model_performance_section(batch_results: dict, confidence_threshold: float, model_bundle: dict) -> None:
+    """Render the overall Model Performance Evaluation dashboard for the current batch."""
+    st.divider()
+    st.subheader("📊 Model Performance Evaluation")
+    st.caption(
+        "Aggregated analytics across **all images** in this batch. "
+        "Use these charts to evaluate how the Decision Tree performed overall."
+    )
+
+    # ── Gather all predictions across every image in the batch ─────────────
+    all_rows: list[dict] = []
+    per_image_counts: dict[str, dict[str, int]] = {}  # image → {type: count}
+
+    for image_name, entry in batch_results.items():
+        img_type_counts: dict[str, int] = {}
+        for prediction, quality in zip(entry["predictions"], entry["quality"]):
+            from cloud_chamber.reporting import reporting_status
+            particle_type = DISPLAY_NAMES.get(prediction["predicted_class"], prediction["predicted_class"])
+            decision = reporting_status(
+                confidence=float(prediction["confidence"]),
+                confidence_threshold=confidence_threshold,
+                quality_score=int(quality["score"]),
+            )
+            all_rows.append({
+                "image": image_name,
+                "particle_type": particle_type,
+                "confidence": float(prediction["confidence"]),
+                "quality_grade": quality["grade"],
+                "quality_score": int(quality["score"]),
+                "decision": decision,
+            })
+            img_type_counts[particle_type] = img_type_counts.get(particle_type, 0) + 1
+        per_image_counts[image_name] = img_type_counts
+
+    total_particles = len(all_rows)
+    n_images = len(batch_results)
+
+    # ── Top-level KPI row ───────────────────────────────────────────────────
+    kpi_cols = st.columns(5)
+    accepted = sum(1 for r in all_rows if "Accepted" in r["decision"] or "accepted" in r["decision"].lower())
+    uncertain = sum(1 for r in all_rows if "Uncertain" in r["decision"] or "uncertain" in r["decision"].lower())
+    avg_conf = (sum(r["confidence"] for r in all_rows) / total_particles * 100) if total_particles else 0
+    high_quality = sum(1 for r in all_rows if r["quality_grade"] in ("A", "B"))
+    unique_types = len(set(r["particle_type"] for r in all_rows))
+
+    kpi_cols[0].metric("🖼️ Images Processed", n_images)
+    kpi_cols[1].metric("🔬 Total Particles", total_particles)
+    kpi_cols[2].metric("✅ Avg Confidence", f"{avg_conf:.1f}%")
+    kpi_cols[3].metric("⭐ High Quality (A/B)", high_quality)
+    kpi_cols[4].metric("🧬 Particle Types", unique_types)
+
+    if total_particles == 0:
+        st.info("No particles detected in this batch to visualise.")
+        return
+
+    # ── Row 1: Particle type pie  +  Decision outcome pie ──────────────────
+    row1_col1, row1_col2 = st.columns(2)
+
+    # — Particle-type pie —
+    type_counter = Counter(r["particle_type"] for r in all_rows)
+    type_labels = list(type_counter.keys())
+    type_values = list(type_counter.values())
+    type_colours = _colour_seq(type_labels, _PARTICLE_COLOURS, {})
+
+    fig_type_pie = go.Figure(
+        go.Pie(
+            labels=type_labels,
+            values=type_values,
+            hole=0.0,
+            marker=dict(colors=type_colours, line=dict(color="#1E293B", width=2)),
+            textinfo="label+percent+value",
+            textfont=dict(size=13),
+            hovertemplate="%{label}: %{value} (%{percent})<extra></extra>",
+        )
+    )
+    fig_type_pie.update_layout(
+        title="Particle Type Distribution",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.3),
+        **_PLOTLY_LAYOUT,
+    )
+    row1_col1.plotly_chart(fig_type_pie, use_container_width=True)
+
+    # — Decision outcome donut —
+    decision_counter = Counter(r["decision"] for r in all_rows)
+    dec_labels = list(decision_counter.keys())
+    dec_values = list(decision_counter.values())
+    dec_colours = _colour_seq(dec_labels, _DECISION_COLOURS, {})
+
+    fig_decision = go.Figure(
+        go.Pie(
+            labels=dec_labels,
+            values=dec_values,
+            hole=0.45,
+            marker=dict(colors=dec_colours, line=dict(color="#1E293B", width=2)),
+            textinfo="label+percent",
+            textfont=dict(size=13),
+            hovertemplate="%{label}: %{value} (%{percent})<extra></extra>",
+        )
+    )
+    fig_decision.update_layout(
+        title="Decision Outcome (Accepted vs Uncertain)",
+        annotations=[dict(
+            text=f"{total_particles}<br>particles",
+            x=0.5, y=0.5, font_size=14,
+            showarrow=False, font_color="#E2E8F0"
+        )],
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.3),
+        **_PLOTLY_LAYOUT,
+    )
+    row1_col2.plotly_chart(fig_decision, use_container_width=True)
+
+    # ── Row 2: Confidence score distribution histogram ───────────────────────
+    confidences = [r["confidence"] * 100 for r in all_rows]
+    fig_conf = go.Figure(
+        go.Histogram(
+            x=confidences,
+            nbinsx=20,
+            marker=dict(
+                color=confidences,
+                colorscale="Plasma",
+                line=dict(color="#1E293B", width=1),
+            ),
+            hovertemplate="Confidence: %{x:.1f}%<br>Count: %{y}<extra></extra>",
+        )
+    )
+    fig_conf.add_vline(
+        x=confidence_threshold * 100,
+        line_dash="dash",
+        line_color="#F59E0B",
+        annotation_text=f"Threshold ({confidence_threshold:.0%})",
+        annotation_position="top right",
+        annotation_font_color="#F59E0B",
+    )
+    fig_conf.update_layout(
+        title="Confidence Score Distribution",
+        xaxis_title="Confidence (%)",
+        yaxis_title="Number of Particles",
+        **_PLOTLY_LAYOUT,
+    )
+    st.plotly_chart(fig_conf, use_container_width=True)
+
+    # ── Row 3: Per-image stacked bar (particle types) ──────────────────────
+    if n_images > 1:
+        image_names = list(per_image_counts.keys())
+        all_types_set = sorted({t for counts in per_image_counts.values() for t in counts})
+        bar_colours = _colour_seq(all_types_set, _PARTICLE_COLOURS, {})
+
+        stacked_traces = []
+        for ptype, colour in zip(all_types_set, bar_colours):
+            stacked_traces.append(
+                go.Bar(
+                    name=ptype,
+                    x=image_names,
+                    y=[per_image_counts[img].get(ptype, 0) for img in image_names],
+                    marker_color=colour,
+                    hovertemplate=f"{ptype}: %{{y}}<extra>%{{x}}</extra>",
+                )
+            )
+        fig_stacked = go.Figure(data=stacked_traces)
+        fig_stacked.update_layout(
+            title="Per-Image Particle Composition",
+            barmode="stack",
+            xaxis_title="Image",
+            yaxis_title="Particle Count",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            **_PLOTLY_LAYOUT,
+        )
+        st.plotly_chart(fig_stacked, use_container_width=True)
+
+    # ── Decision Tree evaluation tables (styled after reference image) ───────
+    st.divider()
+
+    params = model_bundle.get("selected_parameters", {})
+    val_metrics  = model_bundle.get("validation_metrics",  {})
+    final_metrics = model_bundle.get("final_test_metrics", {})
+
+    def _build_eval_table(metrics: dict, label: str) -> None:
+        """Render one per-class evaluation table matching the CNN reference style."""
+        report: dict = metrics.get("classification_report", {})
+        cm = metrics.get("confusion_matrix", [])
+        class_names: list[str] = metrics.get("class_names", [])
+        inf_ms: float = metrics.get("mean_inference_ms_per_track", 0.0)
+
+        st.subheader(f"🌳 Decision Tree {label}")
+        st.caption(
+            "Metrics recorded using the saved evaluation set. "
+            "Per-class accuracy uses one-versus-rest accuracy; "
+            "processing time is the mean Decision Tree inference time per track."
+        )
+
+        rows = []
+
+        # ── Overall (weighted) row ─────────────────────────────────────────
+        w = report.get("weighted avg", {})
+        overall_acc = metrics.get("accuracy", None)
+        rows.append({
+            "Predicted":        "Overall (weighted)",
+            "Accuracy":         f"{overall_acc*100:.2f}%" if isinstance(overall_acc, float) else "—",
+            "Precision":        f"{w.get('precision', 0)*100:.2f}%" if w else "—",
+            "Recall":           f"{w.get('recall',    0)*100:.2f}%" if w else "—",
+            "F1-Score":         f"{w.get('f1-score',  0)*100:.2f}%" if w else "—",
+            "Processing Time":  f"{inf_ms:.4f} ms/track",
+        })
+
+        # ── Per-class rows ─────────────────────────────────────────────────
+        total_samples = sum(sum(r) for r in cm) if cm else 0
+
+        for i, cls in enumerate(class_names):
+            cls_report = report.get(cls, {})
+            display = DISPLAY_NAMES.get(cls, cls)
+
+            # One-vs-rest accuracy from confusion matrix
+            if cm and total_samples > 0:
+                tp = cm[i][i]
+                fp = sum(cm[r][i] for r in range(len(cm))) - tp
+                fn = sum(cm[i][c] for c in range(len(cm[i]))) - tp
+                tn = total_samples - tp - fp - fn
+                ovr_acc = (tp + tn) / total_samples
+                acc_str = f"{ovr_acc*100:.2f}%"
+            else:
+                acc_str = "—"
+
+            rows.append({
+                "Predicted":       display,
+                "Accuracy":        acc_str,
+                "Precision":       f"{cls_report.get('precision', 0)*100:.2f}%" if cls_report else "—",
+                "Recall":          f"{cls_report.get('recall',    0)*100:.2f}%" if cls_report else "—",
+                "F1-Score":        f"{cls_report.get('f1-score',  0)*100:.2f}%" if cls_report else "—",
+                "Processing Time": f"{inf_ms:.4f} ms/track",
+            })
+
+        if rows:
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        else:
+            st.info(f"No {label.lower()} metrics available. Retrain the model to generate them.")
+
+    # Render validation table then final-test table
+    _build_eval_table(val_metrics,   "Validation Evaluation")
+    _build_eval_table(final_metrics, "Final-Test Evaluation")
+
+    # ── Tree hyperparameters compact row ───────────────────────────────────
+    st.divider()
+    st.markdown("#### ⚙️ Tree Hyperparameters")
+    param_labels = {
+        "max_depth":        "Max Depth",
+        "min_samples_leaf": "Min Samples / Leaf",
+        "criterion":        "Split Criterion",
+        "class_weight":     "Class Weighting",
+    }
+    param_rows = [
+        {"Parameter": label, "Value": str(params.get(key, "—"))}
+        for key, label in param_labels.items()
+    ]
+    st.dataframe(param_rows, use_container_width=True, hide_index=True)
+
+    # Feature columns used
+    feature_cols = model_bundle.get("feature_columns")
+    if feature_cols:
+        st.markdown("**Features used by this model:**")
+        st.code(", ".join(feature_cols), language=None)
+
+
 def render(context: PageContext) -> None:
     """Render the Decision Tree classification page with gallery explorer."""
     st.title("Decision Tree Classifier - Explorer")
@@ -148,7 +458,7 @@ def render(context: PageContext) -> None:
             config = st.session_state.get("config")
             if not config:
                 try:
-                    from cloud_chamber.config import load_config
+                    from cloud_chamber.core.config import load_config
                     config = load_config()
                 except:
                     config = {}
@@ -335,6 +645,7 @@ def render(context: PageContext) -> None:
         result["features"],
         predictions,
         confidence_threshold,
+        instance_mask=result["segmentation"].binary_mask,
     )
     
     st.image(context.bgr_to_rgb(overlay))
@@ -371,18 +682,46 @@ def render(context: PageContext) -> None:
     metric_cols = st.columns(2)
     metric_cols[0].metric("Processing Time", f"{processing_time_ms:.1f}ms")
     
-    # Class distribution - graphical only
+    # Class distribution - original bar chart + enhanced Plotly chart
     st.markdown("**Particle Type Distribution**")
     class_counts = summary["class_counts"]
     if class_counts:
+        # Original bar chart (preserved)
         chart_data = {
             DISPLAY_NAMES.get(k, k): v
             for k, v in class_counts.items()
         }
         st.bar_chart(chart_data)
+
+        # Enhanced Plotly horizontal bar chart
+        sorted_types = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)
+        bar_labels = [DISPLAY_NAMES.get(k, k) for k, _ in sorted_types]
+        bar_values = [v for _, v in sorted_types]
+        bar_colours = _colour_seq(bar_labels, _PARTICLE_COLOURS, {})
+        fig_dist = go.Figure(
+            go.Bar(
+                y=bar_labels,
+                x=bar_values,
+                orientation="h",
+                marker=dict(
+                    color=bar_colours,
+                    line=dict(color="#1E293B", width=1),
+                ),
+                text=bar_values,
+                textposition="auto",
+                hovertemplate="%{y}: %{x} particles<extra></extra>",
+            )
+        )
+        fig_dist.update_layout(
+            title="Particle Count by Type (This Image)",
+            xaxis_title="Count",
+            height=max(200, len(bar_labels) * 48 + 80),
+            **_PLOTLY_LAYOUT,
+        )
+        st.plotly_chart(fig_dist, use_container_width=True)
         class_data = [
             {"Type": DISPLAY_NAMES.get(name, name), "Count": count}
-            for name, count in sorted(class_counts.items(), key=lambda x: x[1], reverse=True)
+            for name, count in sorted_types
         ]
         st.dataframe(class_data, use_container_width=True, hide_index=True)
     
@@ -613,28 +952,8 @@ def render(context: PageContext) -> None:
     st.caption(f"Showing results aggregated across all {len(batch_results)} processed image(s) in the batch.")
     st.dataframe(summary_rows, use_container_width=True, hide_index=True)
     
-    # Visualizations for conclusion
-    st.subheader("Summary Visualizations")
-    
-    viz_cols = st.columns(2)
-    
-    with viz_cols[0]:
-        st.markdown("**Decision Distribution**")
-        decision_counts = Counter(row["Decision"] for row in summary_rows_dict)
-        st.bar_chart(decision_counts)
-    
-    with viz_cols[1]:
-        st.markdown("**Particle Type Distribution (All)**")
-        type_counts = Counter(row["Particle Type"] for row in summary_rows_dict)
-        st.bar_chart(type_counts)
-
-    st.markdown("**Particle Type Distribution (Reliable Candidates Only)**")
-    reliable_type_counts = Counter(
-        row["Particle Type"]
-        for row in summary_rows_dict
-        if float(row["Confidence"]) >= confidence_threshold
-    )
-    st.bar_chart(reliable_type_counts)
+    # ===== MODEL PERFORMANCE EVALUATION =====
+    _render_model_performance_section(batch_results, confidence_threshold, model_bundle)
     # Export options
     st.divider()
     st.subheader("Export Results")

@@ -27,6 +27,7 @@ DISPLAY_NAMES = {
 
 
 def _load_results() -> tuple[dict[str, dict], dict[str, str]]:
+    """Load comparable final-test records and report unavailable models."""
     results: dict[str, dict] = {}
     problems: dict[str, str] = {}
     for model_name, path in REPORTS.items():
@@ -48,6 +49,7 @@ def _comparison_sample_count(results: dict[str, dict]) -> int | None:
 
 
 def render() -> None:
+    """Render final-test metrics, class consistency, speed, and limitations."""
     st.title("Final Model Comparison")
 
     results, problems = _load_results()
@@ -184,6 +186,7 @@ def _render_executive_overview(results: dict[str, dict]) -> None:
 
 
 def _render_metric_chart(results: dict[str, dict]) -> None:
+    """Compare overall and class-balanced scores on a common axis."""
     figure = go.Figure()
     specifications = [
         ("Accuracy", "accuracy"),
@@ -211,6 +214,7 @@ def _render_metric_chart(results: dict[str, dict]) -> None:
 
 
 def _render_recall_heatmap(results: dict[str, dict]) -> None:
+    """Show how consistently each model retrieves every particle class."""
     model_names = list(results)
     class_names = ["alpha", "electron_positron", "proton", "v_track"]
     values = [
@@ -250,6 +254,7 @@ def _render_recall_heatmap(results: dict[str, dict]) -> None:
 
 
 def _render_processing_chart(results: dict[str, dict]) -> None:
+    """Compare mean inference latency per detected particle track."""
     timed = [
         (name, result.get("mean_inference_ms_per_track"))
         for name, result in results.items()
@@ -349,6 +354,7 @@ def _render_automatic_findings(
 
 
 def _render_confusion_matrices(results: dict[str, dict]) -> None:
+    """Expose class-to-class error patterns recorded in each model report."""
     st.subheader("Confusion matrices")
     st.caption("Rows are true classes; columns are predicted classes.")
     for model_name, result in results.items():

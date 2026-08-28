@@ -32,10 +32,11 @@ from reportlab.lib import colors
 from reportlab.lib.units import inch
 
 import cloud_chamber.ml.member_models.svm as svm_module
-from cloud_chamber.config import load_config as _load_svm_config
+from cloud_chamber.core.config import load_config as _load_svm_config
 try:
     from .context import PageContext
-except Exception:
+except ImportError:
+    # Support direct script execution, where Python has no package-relative path.
     import cloud_chamber.ui.model_pages.context as _context_mod
     PageContext = _context_mod.PageContext
 
@@ -1097,8 +1098,9 @@ def _get_model_metadata(model_path: Path) -> dict:
             metadata["C"] = params.get("C", 1.0)
             svc = bundle["model"].named_steps["svm"]
             metadata["gamma"] = getattr(svc, "gamma", "scale")
-        except Exception:
-            pass
+        except (OSError, EOFError, KeyError, TypeError, ValueError, AttributeError):
+            # Metadata is supplementary; classification can still use defaults.
+            return metadata
     return metadata
 
 
@@ -1107,8 +1109,9 @@ def _load_training_report(report_path: Path) -> dict | None:
         try:
             with open(report_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError):
+            # A missing/corrupt report must not prevent model inference.
+            return None
     return None
 
 
