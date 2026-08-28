@@ -227,6 +227,7 @@ def evaluate(model, matrix: np.ndarray, labels: np.ndarray) -> dict:
         "balanced_accuracy": float(balanced_accuracy_score(labels, predictions)),
         "macro_f1": float(f1_score(labels, predictions, average="macro")),
         "weighted_f1": float(f1_score(labels, predictions, average="weighted")),
+        "total_processing_time_ms": elapsed_ms,
         "mean_inference_ms_per_track": elapsed_ms / max(len(labels), 1),
         "class_names": class_names,
         "confusion_matrix": confusion_matrix(

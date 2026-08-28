@@ -104,7 +104,7 @@ def render(context: PageContext) -> None:
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("🔬 SVM Track Classifier & Scientific Analysis")
+    st.title("SVM Track Classifier")
 
     # Initialize session states
     st.session_state.setdefault("svm_batch_results", {})
@@ -116,6 +116,62 @@ def render(context: PageContext) -> None:
     model_metadata = _get_model_metadata(model_path)
     training_report_path = Path("models/svm_training_report.json")
     training_report = _load_training_report(training_report_path)
+
+    # ==============================================================================
+    # PRE-RUN MODEL PERFORMANCE DASHBOARD
+    # ==============================================================================
+    st.markdown("---")
+    st.subheader("Model Performance")
+
+    if training_report and "segmented_final_test" in training_report:
+        seg_test = training_report["segmented_final_test"]
+        clf_rep = seg_test.get("classification_report", {})
+        
+        # Pull Metrics from json report
+        acc = seg_test.get("accuracy", 0.0)
+        macro_prec = clf_rep.get("macro avg", {}).get("precision", 0.0)
+        macro_rec = clf_rep.get("macro avg", {}).get("recall", 0.0)
+        macro_f1 = seg_test.get("macro_f1", clf_rep.get("macro avg", {}).get("f1-score", 0.0))
+        
+        # Determine Processing Time (Benchmark per-track -> Benchmark total -> Live execution)
+        avg_track_ms = seg_test.get("mean_inference_ms_per_track", 0.0)
+        total_test_ms = seg_test.get("total_processing_time_ms", 0.0)
+        svm_info = st.session_state.get("svm_session_info") or {}
+        live_proc_s = svm_info.get("processing_time_s", None)
+        if avg_track_ms > 0:
+            proc_time_str = f"{avg_track_ms:.2f} ms/trk"
+        elif total_test_ms > 0:
+            proc_time_str = f"{total_test_ms:.1f} ms"
+        elif live_proc_s is not None:
+            proc_time_str = f"{live_proc_s * 1000:.1f} ms"
+        else:
+            proc_time_str = "Pending Run"
+
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("Accuracy", f"{acc:.1%}")
+        m2.metric("Bal. Accuracy", f"{seg_test.get('balanced_accuracy', 0.0):.1%}")
+        m3.metric("Precision", f"{macro_prec:.1%}")
+        m4.metric("Recall", f"{macro_rec:.1%}")
+        m5.metric("F1-Score", f"{macro_f1:.1%}")
+        m6.metric("Processing Time", proc_time_str)
+
+        st.markdown("#### Per-Class Metrics (Final Test Set)")
+        clf_rep = seg_test.get("classification_report", {})
+        per_class_rows = []
+        for cls in ["alpha", "electron_positron", "proton", "v_track"]:
+            if cls in clf_rep:
+                stats = clf_rep[cls]
+                per_class_rows.append({
+                    "Class": DISPLAY_NAMES.get(cls, cls),
+                    "Precision": f"{stats.get('precision', 0.0):.1%}",
+                    "Recall": f"{stats.get('recall', 0.0):.1%}",
+                    "F1-Score": f"{stats.get('f1-score', 0.0):.1%}",
+                    "Support": int(stats.get("support", 0))
+                })
+        st.dataframe(pd.DataFrame(per_class_rows), use_container_width=True, hide_index=True)
+
+    else:
+        st.warning("⚠️ Pre-run performance metrics unavailable: `svm_training_report.json` standard evaluation missing.")
 
     # Check for Shared Pipeline results
     result = st.session_state.get("pipeline_result")
@@ -132,6 +188,7 @@ def render(context: PageContext) -> None:
     # ==============================================================================
     # 1. INPUT & PROCESSING SUMMARY & CONTROLS
     # ==============================================================================
+
     st.markdown("---")
     st.header("Input & Processing Summary")
 
@@ -149,7 +206,7 @@ def render(context: PageContext) -> None:
     col_preview, col_checklist = st.columns([3, 2])
 
     with col_preview:
-        st.subheader("🖼️ Input Frame / Overlay Preview")
+        st.subheader("Input Frame / Overlay Preview")
         contours = result["segmentation"].contours
         active_image = result["input_image"].copy()
         cv2.drawContours(active_image, contours, -1, (255, 255, 0), 2)
@@ -606,7 +663,7 @@ def render(context: PageContext) -> None:
     st.markdown("""
     <div class="warning-callout">
         <b>📌 Technical Clarification on Prediction Rules vs Reporting Threshold:</b><br>
-        • <b>SVM Model Prediction Rule:</b> The trained Support Vector Machine assigns multi-class probabilities to candidate tracks. A dedicated physics rule enforces that a track is only classified as <code>Proton</code> if $P(\\text{{Proton}}) > 0.75$; otherwise, the second-most probable particle class is assigned.<br>
+        • <b>SVM Model Prediction Rule:</b> The trained Support Vector Machine assigns multi-class probabilities to candidate tracks. A dedicated physics rule enforces that a track is only classified as <code>Proton</code> if <code>Proton</code> > 0.75%; otherwise, the second-most probable particle class is assigned.<br>
         • <b>User Reporting Threshold:</b> The selected confidence slider (currently <b>{:.0%}</b>) acts purely as an aesthetic & reporting filter. Predictions below this threshold are marked <code>Uncertain</code> in reports, but the underlying SVM probabilities and particle assignments remain unchanged.
     </div>
     """.format(confidence_threshold), unsafe_allow_html=True)
@@ -922,69 +979,7 @@ def render(context: PageContext) -> None:
             st.dataframe(pd.DataFrame(img_table_rows), use_container_width=True, hide_index=True)
 
     # ==============================================================================
-    # 10. MODEL PERFORMANCE SECTION
-    # ==============================================================================
-    st.markdown("---")
-    st.header("Model Performance Evaluation")
-
-    st.markdown("""
-    <div class="info-callout">
-        <b>NOTE:</b> The metrics below represent <b>Model Evaluation Performance</b> measured on the holdout validation/test datasets during model training. They are not metrics calculated from your uploaded image.
-    </div>
-    """, unsafe_allow_html=True)
-
-    if training_report:
-        seg_test = training_report.get("segmented_final_test", {})
-        if seg_test:
-            acc = seg_test.get("accuracy", 0.0)
-            bal_acc = seg_test.get("balanced_accuracy", 0.0)
-            macro_f1 = seg_test.get("macro_f1", 0.0)
-            weighted_f1 = seg_test.get("weighted_f1", 0.0)
-
-            pm1, pm2, pm3, pm4 = st.columns(4)
-            pm1.metric("Final Test Accuracy", f"{acc:.1%}")
-            pm2.metric("Balanced Accuracy", f"{bal_acc:.1%}")
-            pm3.metric("Macro F1-Score", f"{macro_f1:.1%}")
-            pm4.metric("Weighted F1-Score", f"{weighted_f1:.1%}")
-
-            perf_col1, perf_col2 = st.columns(2)
-
-            with perf_col1:
-                st.markdown("#### Per-Class Metrics (Final Test Set)")
-                clf_rep = seg_test.get("classification_report", {})
-                per_class_rows = []
-                for cls in ["alpha", "electron_positron", "proton", "v_track"]:
-                    if cls in clf_rep:
-                        stats = clf_rep[cls]
-                        per_class_rows.append({
-                            "Class": DISPLAY_NAMES.get(cls, cls),
-                            "Precision": f"{stats.get('precision', 0.0):.1%}",
-                            "Recall": f"{stats.get('recall', 0.0):.1%}",
-                            "F1-Score": f"{stats.get('f1-score', 0.0):.1%}",
-                            "Support": int(stats.get("support", 0))
-                        })
-                st.dataframe(pd.DataFrame(per_class_rows), use_container_width=True, hide_index=True)
-
-            with perf_col2:
-                st.markdown("#### Confusion Matrix (Final Test Set)")
-                cm = seg_test.get("confusion_matrix", [])
-                if cm:
-                    class_labels = [DISPLAY_NAMES.get(c, c) for c in seg_test.get("class_names", ["alpha", "electron_positron", "proton", "v_track"])]
-                    fig_cm = px.imshow(
-                        cm,
-                        x=class_labels,
-                        y=class_labels,
-                        text_auto=True,
-                        color_continuous_scale="Blues",
-                        labels=dict(x="Predicted Class", y="True Ground Truth Class", color="Count"),
-                        title="Final Test Confusion Matrix"
-                    )
-                    st.plotly_chart(fig_cm, use_container_width=True)
-    else:
-        st.info("Training report metadata is not available.")
-
-    # ==============================================================================
-    # 11. MODEL / METHODOLOGY INFORMATION
+    # 10. MODEL / METHODOLOGY INFORMATION
     # ==============================================================================
     st.markdown("---")
     with st.expander("Model & Methodology Information", expanded=False):
