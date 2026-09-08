@@ -1,264 +1,275 @@
-﻿# Cloud Chamber Particle Classification
+# Cloud Chamber Particle-Track Classification
 
-University-level BMDS2133 **Mode A** study. All five classifiers use exactly
-the same acquisition, preprocessing, segmentation, contour features and data
-splits so their results can be compared fairly.
+This project detects particle tracks in cloud-chamber images and video frames,
+extracts a representation for each segmented track, and classifies it as:
 
-## Selected methodology
+- Alpha
+- Electron/Positron
+- Proton
+- V-track
 
-1. Acquire one image, a batch of images, or sampled frames from an
-   MP4/AVI/MOV video.
-2. Apply four-corner perspective rectification to a processing copy.
-3. Divide the complete image automatically into overlapping square tiles.
-4. Spatially scale every tile to the fixed processing resolution.
-5. Convert BGR/RGB to grayscale and apply Gaussian filtering.
-6. Apply Otsu binary thresholding.
-7. Refine the mask using morphological opening and closing.
-8. Detect external contours.
-9. Extract area, perimeter, length, width, aspect ratio, solidity,
-   rectangularity, thickness, orientation and mean intensity.
-10. Classify the common features using CNN, SVM, Decision Tree, MLP or
-   Extremely Randomised Trees (Extra Trees).
+The Streamlit application provides a shared image-processing pipeline,
+individual dashboards for five classifiers, downloadable reports, and a final
+model-comparison dashboard.
 
-CLAHE, background subtraction, edge detection, Hough transforms, watershed
-and Mask R-CNN are not part of the selected methodology.
+## System workflow
 
-## Setup and run
+```text
+Image or video
+      ↓
+Acquisition and optional temporal video enhancement
+      ↓
+Perspective rectification
+      ↓
+Overlapping tiling and spatial scaling
+      ↓
+Grayscale → Gaussian filter → white top-hat enhancement
+      ↓
+Otsu-guided hysteresis thresholding
+      ↓
+Morphological closing and fragment linking
+      ↓
+Contour filtering and learned artefact rejection
+      ↓
+Segmented tracks → classification → report
+```
+
+### Image processing
+
+1. **Acquisition** accepts JPG, JPEG, PNG, TIF and TIFF images or MP4, AVI and
+   MOV videos. Video samples retain their frame number, timestamp and source.
+2. **Temporal enhancement** can compare neighbouring frames to strengthen
+   transient tracks while suppressing stationary background information.
+3. **Rectification** maps four chamber boundary points to a rectangle. It
+   corrects perspective only on a processing copy; the source remains unchanged.
+4. **Tiling** covers the rectified image with overlapping `800 × 800` tiles.
+   The 15% overlap protects tracks crossing tile boundaries. Each tile is
+   processed at `640 × 640` pixels.
+5. **Enhancement** converts the tile to grayscale, applies a `7 × 7` Gaussian
+   filter with sigma `1.4`, and uses white top-hat transformation to emphasise
+   locally bright tracks over uneven backgrounds.
+6. **Segmentation** uses Otsu to estimate an image-dependent threshold.
+   Hysteresis retains faint pixels only when connected to strong track pixels.
+7. **Refinement** uses closing, directional reconnection and aligned/curved
+   fragment linking to reconnect broken track sections.
+8. **Filtering** rejects contours that fail the general-track or thin-track
+   rules. A separate Extra Trees artefact filter can reject scratches,
+   reflections and background texture that survive the geometric rules.
+9. Tile masks are mapped back to the complete image and merged. These final
+   contours are passed to feature extraction and classification.
+
+Dataset-specific segmentation profiles are stored in `config.yaml`. The
+primary and Müller datasets use separate artefact filters because their image
+conditions and annotation formats differ.
+
+## Classifiers
+
+| Model | Implementation | Input used by the current code |
+|---|---|---|
+| CNN | PyTorch `TrackPatchCNN` | `128 × 128` masked grayscale track patch |
+| SVM | scikit-learn calibrated SVC | 11 selected contour features |
+| Decision Tree | scikit-learn `DecisionTreeClassifier` | 10 contour features |
+| MLP | Five scikit-learn MLP pipelines with soft voting | All 16 contour features |
+| Extremely Randomized Trees | scikit-learn `ExtraTreesClassifier` | All 16 contour features |
+
+The shared 16-feature record contains area, perimeter, major axis, mean width,
+orientation, aspect ratio, solidity, rectangularity, thickness, mean intensity,
+intensity standard deviation, circularity, convexity,
+perimeter-to-major-axis ratio, and sine and cosine encodings of twice the
+orientation.
+
+The CNN uses the segmented shape directly rather than this numerical vector.
+SVM and Decision Tree use selected subsets defined in their model modules.
+Every saved model stores its expected feature order, preventing incompatible
+runtime features from being silently accepted.
+
+## Installation and startup
+
+Python 3.10 or newer is required.
 
 ```powershell
+cd C:\Coding\CloudChamberDetector
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-Do not run `python app.py`; Streamlit requires its own runner.
+Do not use `python app.py`; Streamlit applications require the Streamlit
+runner.
 
-### Image calibration
+## Using the application
 
-Perspective rectification corrects an angled chamber view before spatial
-scaling. The application automatically estimates editable top-left, top-right,
-bottom-right and bottom-left points on the complete image processing copy.
-Correct these values if the preview boundary does not follow the chamber. Rectification and
-spatial scaling standardise geometry in pixels; they do not create centimetre
-measurements without a known physical reference.
+### 1. Process an input
 
-On **Shared Processing Pipeline**, choose **Image** to upload several image
-files together and press **Load image batch**. Choose **Video** to preview one
-frame or set the start frame, sampling interval and maximum frame count before
-pressing **Extract video frame batch**. Use the acquisition-batch selector to
-choose the image/frame sent through enhancement, segmentation, feature
-extraction and classification. The filename and video frame number are kept so
-each result remains traceable to its source.
+Open **Shared Processing Pipeline** and choose **Image** or **Video**.
 
-### Understanding the MLP report
+- For images, upload one or more files and select a sample from the batch.
+- For video, configure the starting frame, interval and maximum frame count.
+- Enable temporal enhancement when a track is clearer across neighbouring frames.
+- Check the proposed rectification boundary and adjust it when necessary.
+- Review the enhancement, binary mask, accepted contours and feature table.
 
-After processing an input, open **MLP** and press **Classify and create MLP
-report**. The report separates two different signals:
+The shared result is stored in the Streamlit session. All model pages therefore
+classify the same accepted segmented regions for the current input.
 
-- **Classification confidence** is the MLP class probability.
-- **Contour quality** is a transparent heuristic based on local contrast,
-  contour shape, thin-track acceptance and analysis-boundary position. It is a
-  review aid, not a correctness probability.
+### 2. Classify the tracks
 
-The page provides image-level summary cards, class counts, a colour-coded
-overview, a particle table and collapsible evidence cards containing the exact
-binary contour, all four class probabilities, contour measurements and
-warnings. Yellow boxes are uncertain classifications; grey dashed boxes require
-segmentation review. Results accumulated for different batch images or video
-frames appear in the session batch table.
+Open a classifier page and run classification. A result can contain:
 
-The MLP confidence slider defaults to `0.60`. Changing it affects only whether
-a prediction is reported as confident or uncertain; it does not retrain the
-model or change its most likely class. The threshold actually used is recorded
-in the JSON and PDF traceability information.
+- Track identifier and segmented shape
+- Predicted class and confidence
+- Per-class probability evidence
+- Segmentation-quality information
+- Processing time and downloadable outputs
 
-Available downloads are an annotated PNG, particle CSV and multipage PDF
-summary. The PDF report retains the input source, model details, confidence
-threshold and important result information. Batch results remain visible in
-the application summary table.
+Low confidence marks a prediction as uncertain but does not change its most
+likely class or colour. `Review segmentation` means the contour may be
+incomplete, fragmented or merged; it is not another particle class.
 
-## Shared code
+### 3. Compare the models
 
-| File | Responsibility |
+Open **Final Model Comparison** to compare accuracy, balanced accuracy, macro
+F1, weighted F1, per-class recall and inference time.
+
+The official comparison reads `final_test` from each model report. This section
+uses held-out ground-truth particle records. A report may also contain
+`segmented_final_test`, which evaluates automatic segmentation output. These
+sections use different cohorts and must not be presented as the same result.
+
+## Dataset design
+
+| Partition | Purpose |
 |---|---|
-| `app.py` | Image/video acquisition, shared processing previews, five model pages and final-comparison placeholder. |
-| `config.yaml` | Fixed Gaussian, threshold/morphology and dataset settings. |
-| `cloud_chamber/acquisition.py` | Image loading, video discovery and frame extraction. |
-| `cloud_chamber/enhancement.py` | Grayscale conversion followed by Gaussian filtering only. |
-| `cloud_chamber/calibration.py` | Perspective rectification and its coordinate transform. |
-| `cloud_chamber/tiling.py` | Full-coverage overlapping tiles, tile scaling, padding, coverage validation and mask merging. |
-| `cloud_chamber/segmentation.py` | Otsu thresholding, opening, closing and contour detection. |
-| `cloud_chamber/features.py` | Common contour-based feature extraction. |
-| `cloud_chamber/pipeline.py` | Integrates all shared processing stages. |
+| Development | Fit model parameters |
+| Validation | Select model and processing settings |
+| Final test | Evaluate once after all choices are fixed |
 
-Members must not duplicate or change the shared stages during model
-comparison. Parameters are tuned using validation data and then fixed.
+Partitions are organised by recording group rather than random images. This
+prevents neighbouring frames with nearly identical backgrounds from appearing
+in both training and testing data.
 
-The shared GUI preserves the uploaded source image and automatically covers a
-rectified processing copy with overlapping square tiles. Every tile is scaled
-to the single configured processing resolution before enhancement and
-detection. Accepted tile masks are mapped into the full-image coordinate space
-and combined before contours and features are extracted, removing overlap
-duplicates without relying only on bounding-box suppression. The final boxes
-are displayed on the original full-resolution image. If this geometric
-preprocessing changes, rebuild cached contour features and retrain all
-classifiers before comparing model results.
+### Primary dataset
 
-`config.yaml` centralises `tile_size`, `overlap_ratio`, `processing_width` and
-`processing_height`. The current 15% overlap is an initial experimental value,
-not a claim of universal optimality. The debug expander shows tile boundaries,
-per-tile transformation metadata and the verified minimum coverage count.
+Prepared data are stored under `dataset/primary_dataset_split/`. Its supplied
+annotations are bounding boxes and do not provide sufficient examples of all
+four classes for an independent four-class comparison.
 
-## Team-member implementation files
+### External Müller dataset
 
-| Classifier | File |
-|---|---|
-| CNN | `cloud_chamber/ml/member_models/cnn.py` |
-| SVM | `cloud_chamber/ml/member_models/svm.py` |
-| Decision Tree | `cloud_chamber/ml/member_models/decision_tree.py` |
-| MLP | `cloud_chamber/ml/member_models/mlp.py` |
-| Extremely Randomised Trees | `cloud_chamber/ml/member_models/extra_trees.py` |
+The Müller data provide five-channel semantic masks: four particle channels and
+one background channel. Conversion produces individual instances and COCO
+annotations. Source images remain in one shared folder; split membership is
+defined by each partition's `annotations_coco.json` and `manifest.csv`.
 
-Each member adds training, validation, prediction and model-saving functions
-only in their assigned file. Each model must use the same feature columns,
-class mapping and split manifest.
+Do not guess which shared-folder image is unused. Use the final-test COCO file
+or manifest to identify images reserved for testing.
 
-### Train and use the MLP
+## Training
 
-Install the updated dependencies, build labelled contour features, train all
-declared MLP candidates and select the best one using validation macro F1:
+Run commands from the project root:
 
 ```powershell
-python -m pip install -r requirements.txt
+# Build or verify shared feature tables
+python scripts/data/build_shared_features.py
+
+# Feature-based classifiers
+python scripts/training/train_svm.py
+python scripts/training/train_decision_tree.py
 python scripts/training/train_mlp.py
+python scripts/training/train_extra_trees.py
+
+# CNN
+python -m cloud_chamber.ml.member_models.cnn
+
+# Domain-specific particle-versus-artefact filters
+python scripts/training/train_artifact_filter.py --domain external
+python scripts/training/train_artifact_filter.py --domain primary
 ```
 
-The command saves:
+Use `--rebuild-features` or the relevant segmented-feature rebuild option only
+after changing segmentation or feature extraction. Run a command with `--help`
+to view its supported options.
 
-- `models/mlp_classifier.joblib`: fitted StandardScaler and MLP classifier.
-- `models/mlp_training_report.json`: class counts, every candidate parameter
-  result, selected candidate, confusion matrix and final-test metrics.
-- `data/features/shared/muller/*.csv`: shared reproducible contour features
-  used by MLP, SVM, Decision Tree and Extra Trees. Missing files can be built
-  independently with `python scripts/data/build_shared_features.py`.
+Training uses ground-truth records together with production-segmented examples
+where implemented. Official validation and final-test classifier metrics use
+one ground-truth representation per annotation. Segmentation duplicates or
+missed contours therefore do not redefine the official classifier test cohort.
 
-Use `python scripts/training/train_mlp.py --rebuild-features` only after changing the
-shared feature extraction. In the GUI, process an input on **Shared Processing
-Pipeline**, open **MLP**, then select **Classify and create MLP report**.
+The selected MLP is retrained as five independently seeded
+StandardScaler → MLPClassifier pipelines. Soft voting averages their class
+probabilities. Ensemble agreement measures stability between these members; it
+does not prove correctness without a ground-truth label.
 
-The report draws a track ID, predicted particle type and confidence on the
-input image. Its table contains probabilities for all four particle classes,
-bounding-box coordinates and inference time. Predictions below the adjustable
-confidence threshold are shown in yellow as `Uncertain`; the threshold changes
-reporting only and does not retrain the model. Both the annotated PNG and the
-detailed CSV can be downloaded from the MLP page.
+## Evaluation metrics
 
-### Small-dot rejection
+- **Accuracy:** proportion of all predictions that are correct.
+- **Balanced accuracy:** average recall across classes.
+- **Precision:** proportion of predictions for a class that are correct.
+- **Recall:** proportion of the true class that the model finds.
+- **F1-score:** balance between precision and recall.
+- **Macro F1:** mean class F1 with equal importance for every class.
+- **Weighted F1:** mean class F1 weighted by class frequency.
+- **F2-score:** precision–recall score giving greater importance to recall.
+- **IoU/Dice:** pixel overlap between predicted and ground-truth masks.
 
-The shared segmenter rejects noise before classification using explicit values
-in `config.yaml`. A contour must have area of at least `80 px^2` and major-axis
-length of at least `25 px` under the general-track rule. A second electron-like
-rule accepts area `90 px^2`, perimeter `40 px`, major-axis length `17 px` and
-aspect ratio `2.0`. This preserves an elongated electron-track path while
-preventing irregular compact blobs with long boundaries from passing it.
+Accuracy alone can be influenced by the most frequent class. Model analysis
+therefore also uses macro F1, balanced accuracy, per-class metrics and confusion
+matrices.
 
-To preserve fragmented tracks without adding another technique, Gaussian
-filtering uses a `7x7` kernel with sigma `1.4`. Morphological white top-hat
-(`41x41`) suppresses slowly varying background before Otsu thresholding with
-an offset of `4`. On all Muller validation masks this achieved pixel F1
-`0.4481` and IoU `0.2888`, compared with F1 `0.3734` and IoU `0.2295` for
-global Otsu+8. Morphological closing (`15x15`) reconnects longer gaps; this
-kernel achieved the best validation F1 (`0.4503`) among 7, 9, 11 and 15.
-Morphological opening is disabled because
-its erosion stage can erase tracks only one or two pixels wide; residual dots
-are handled by contour area, length and aspect ratio instead. Near-frame-spanning
-regions are rejected only when they are also extremely thin, which removes
-straight chamber boundaries without rejecting an ordinary long track solely
-because of its length. These settings must be tuned on validation data and
-then fixed for all five models.
+## Project structure
 
-The parameter values are not described as universally optimal. The candidate
-set tests 32, 64 and 64â†’32 hidden units with L2 strengths `0.0001` and `0.001`.
-Adam's documented starting learning rate `0.001` is fixed, while architecture
-and L2 strength are selected only from validation results. A maximum of 500
-epochs is a safety ceiling. Adam early stopping monitors a stratified 10% of
-the development data and stops after 20 epochs without sufficient improvement;
-the separate validation split still selects the final candidate.
+```text
+app.py                         Streamlit composition and navigation
+config.yaml                    Dataset and processing settings
+cloud_chamber/
+  core/                        Configuration, contracts and validation
+  image_processing/            Acquisition through segmentation
+  feature_extraction/          Shared contour-feature calculations
+  ml/
+    member_models/             Five classifier implementations
+    artifact_filter.py         Particle-versus-artefact model support
+    contour_dataset.py         Labelled feature generation
+  evaluation/                  Annotations and segmentation metrics
+  reporting/                   Quality checks and report exports
+  ui/
+    shared_pipeline/           Shared processing interface
+    model_pages/               Classifier dashboards
+    comparison_page.py         Final-test comparison
+scripts/
+  data/                        Dataset and feature preparation
+  training/                    Model training
+  evaluation/                  Segmentation experiments
+models/                        Saved models and JSON reports
+results/                       Generated experimental results
+```
 
-## Dataset splits
+See `FILE_GUIDE.md` for a detailed responsibility map.
 
-- `development`: fit each classifier.
-- `validation`: tune model hyperparameters and shared pipeline settings.
-- `final_test`: run once after every choice is fixed.
+## Reproducibility and checks
 
-The physical primary split is under `dataset/primary_dataset_split/`.
-
-### How the Müller split works
-
-The Müller split is **metadata-based**. Its 483 images remain once in
-`dataset/external_dataset/images/` to avoid making three unnecessary copies.
-Members must not select or move those source images manually. Membership is
-defined by the COCO file in each split folder:
-
-| Purpose | COCO file used by the code | Images | Labelled instances |
-| --- | --- | ---: | ---: |
-| Train the model | `dataset/external_dataset_split/development/annotations_coco.json` | 330 | 5,336 |
-| Select parameters | `dataset/external_dataset_split/validation/annotations_coco.json` | 108 | 1,624 |
-| Report the final result once | `dataset/external_dataset_split/final_test/annotations_coco.json` | 45 | 1,484 |
-
-Each COCO image record contains a relative link such as
-`../../external_dataset/images/<image name>.jpg`. The loader resolves this link
-automatically. `manifest.csv` is a human-readable list for checking which
-recording and image belongs to a split; it is not the training input.
-
-For the provided MLP implementation, members normally do not specify the files
-one at a time. Run:
+- The configured random seed is `42`.
+- Feature order and classes are stored with each trained model.
+- Recording-group splits reduce frame-level leakage.
+- Parameters are selected using validation data, not final-test data.
+- Segmentation or feature-contract changes require regenerated segmented
+  features and retraining of affected classifiers.
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\training\train_mlp.py --rebuild-features
+python -m pip install -e ".[dev]"
+ruff check .
+pytest
+python -m compileall -q app.py cloud_chamber scripts
 ```
 
-`scripts/training/train_mlp.py` automatically loops over `development`, `validation`
-and `final_test`, reads the correct `annotations_coco.json`, trains only on the
-development feature table, selects the candidate on validation, and evaluates
-the selected model on final test. Other model members should follow the same
-split names and may reuse `cloud_chamber/ml/contour_dataset.py` to build or load
-their labelled contour-feature tables.
+## Limitations
 
-The split is leakage-safe by recording: an entire video recording belongs to
-only one split. See `dataset/external_dataset_split/summary.json` for the counts
-and audit, which records `recording_group_overlap: false` and
-`image_id_overlap: false`.
-
-Use the same configured labels for all classifiers: `alpha`,
-`electron_positron`, `proton` and Müller `v_track`. Report per-class precision,
-recall and F1-score, macro F1-score, confusion matrix and processing time.
-
-The project taxonomy follows `Types of particle tracks.pdf`: alpha, proton and
-electron/positron (with muon-like thin tracks discussed in the same visual
-group). Figures showing a low-energy electron or a secondary electron describe
-electron behaviour, not additional classes. Müller `v_track` is retained as a
-fourth external-dataset class and is never renamed or merged into alpha. The
-primary dataset contributes alpha and electron/positron labels; Müller provides
-all four configured classes.
-
-### Dataset-specific region of interest
-
-The application identifies the image layout automatically; no analysis-region
-control is shown on the Shared Processing Pipeline page:
-
-- **External MÃ¼ller / already cropped** uses the complete image.
-- **Primary dataset / full chamber** excludes 6% from the left and right, 7%
-  from the top and 12% from the bottom. It also uses Otsu offset `40`, closing
-  `3x3`, minimum area `200 px^2` and minimum major axis `40 px`. The permissive
-  thin-track exception is disabled because dense primary droplets otherwise
-  create hundreds of false contours. On 19 primary validation images, this
-  reduced unmatched contours from 400 to 56 and gave the best tested one-to-one
-  box F1 (`0.239`).
-
-Each tile is segmented before its accepted mask is mapped back to the common
-full-image space. Overlapping masks are combined, and contours are then read
-once from that merged mask; the same contours generate both yellow bounding
-boxes and feature vectors.
-
+- Segmentation sensitivity varies with illumination and background conditions.
+- Missed tracks cannot be classified; fragmented or merged contours alter the
+  representation supplied to the model.
+- Pixel-based measurements depend on image scale because complete physical
+  calibration is not part of the evaluated workflow.
+- Proton and V-track results are less stable when their test counts are small.
+- CNN and feature-based classifiers use different representations, so their
+  comparison covers the complete representation-and-classification strategy.

@@ -22,7 +22,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app import _process_tiled_pipeline_image
+from cloud_chamber.ui.shared_pipeline.page import (
+    process_pipeline_image as _process_tiled_pipeline_image,
+)
 from cloud_chamber.core.config import load_config
 from cloud_chamber.ml.contour_dataset import annotation_to_mask
 

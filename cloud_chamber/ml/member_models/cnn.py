@@ -222,7 +222,9 @@ def segmented_track_samples(
     minimum_label_overlap: float = 0.5,
 ) -> list[PreparedTrackSample]:
     """Build labelled patches from the exact production segmentation path."""
-    from app import _process_tiled_pipeline_image
+    from cloud_chamber.ui.shared_pipeline.page import (
+        process_pipeline_image as _process_tiled_pipeline_image,
+    )
 
     payload = json.loads(annotation_path.read_text(encoding="utf-8"))
     categories = {int(item["id"]): str(item["name"]) for item in payload["categories"]}

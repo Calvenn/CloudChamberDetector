@@ -206,7 +206,9 @@ def build_segmented_feature_csv(
         if use_production_pipeline:
             # Import lazily to avoid making the dataset module depend on the UI
             # during ordinary ground-truth or legacy feature generation.
-            from app import _process_tiled_pipeline_image
+            from cloud_chamber.ui.shared_pipeline.page import (
+                process_pipeline_image as _process_tiled_pipeline_image,
+            )
 
             pipeline_result = _process_tiled_pipeline_image(image, config)
             segmented = pipeline_result["segmentation"]
